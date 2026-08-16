@@ -1,0 +1,10 @@
+# 小猪记账静态分析配置
+include: package:flutter_lints/flutter.yaml
+
+# 参考工程 BeeCount 仅供阅读，不参与本项目分析
+analyzer:
+  exclude:
+    - references/**
+
+linter:
+  rules: {}

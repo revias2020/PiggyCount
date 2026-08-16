@@ -1,0 +1,72 @@
+name: piggy_count
+description: 小猪记账 — Android / iOS 个人记账应用
+publish_to: 'none'
+version: 0.3.0+1
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  flutter_riverpod: ^2.6.1
+  shared_preferences: ^2.5.3
+  intl: ^0.20.2
+  # Drift 2.31 + sqlite3 2.x：避免 sqlite3 3.x 构建钩子从 GitHub 拉 .so（国内常超时）
+  drift: 2.31.0
+  sqlite3_flutter_libs: 0.5.39
+  path_provider: ^2.1.5
+  path: ^1.9.1
+  uuid: ^4.5.1
+  fl_chart: ^1.2.0
+  http: ^1.6.0
+  speech_to_text: ^7.4.0
+  image_picker: ^1.2.3
+  file_picker: 10.1.2
+  share_plus: 10.1.4
+  flutter_local_notifications: ^22.3.0
+  permission_handler: ^13.0.1
+  package_info_plus: ^9.0.1
+  reorderable_grid_view: 2.2.8
+  yaml: ^3.1.3
+  archive: ^4.0.9
+  image_cropper: ^12.2.1
+  flutter_image_compress: ^2.5.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  drift_dev: 2.31.0
+  build_runner: ^2.4.15
+  flutter_launcher_icons: ^0.14.4
+  flutter_native_splash: ^2.4.8
+
+dependency_overrides:
+  sqlite3: 2.9.3
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/brand/
+    - assets/icons/
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: assets/brand/app_icon.png
+  adaptive_icon_background: "#2F6BFF"
+  adaptive_icon_foreground: assets/brand/app_icon.png
+  remove_alpha_ios: true
+
+flutter_native_splash:
+  color: "#2F6BFF"
+  image: assets/brand/app_icon.png
+  android: true
+  ios: true
+  android_12:
+    color: "#2F6BFF"
+    image: assets/brand/app_icon.png
