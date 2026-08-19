@@ -15,6 +15,7 @@ final autoBillingServiceProvider = Provider(
     bookkeeper: ref.watch(aiBookkeeperProvider),
     resolveLedgerId: () async => ref.read(currentLedgerIdProvider),
     notifications: ref.watch(billingNotificationServiceProvider),
+    providerStore: ref.watch(aiProviderStoreProvider),
   ),
 );
 

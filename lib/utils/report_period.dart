@@ -141,3 +141,26 @@ class ReportPeriod {
     );
   }
 }
+
+/// 报表标题用周期文案（如「2026年8月」「本周」「2026年」）。
+String formatReportPeriodTitle(ReportPeriod period) {
+  switch (period.scope) {
+    case ReportScope.week:
+      final endDay = period.end.subtract(const Duration(days: 1));
+      return '${period.start.month}/${period.start.day}'
+          '–${endDay.month}/${endDay.day}';
+    case ReportScope.month:
+      return '${period.anchor.year}年${period.anchor.month}月';
+    case ReportScope.year:
+      return '${period.anchor.year}年';
+    case ReportScope.custom:
+      final endDay = period.end.subtract(const Duration(days: 1));
+      if (period.start.year == endDay.year &&
+          period.start.month == endDay.month &&
+          period.start.day == endDay.day) {
+        return '${period.start.year}/${period.start.month}/${period.start.day}';
+      }
+      return '${period.start.year}/${period.start.month}/${period.start.day}'
+          '–${endDay.year}/${endDay.month}/${endDay.day}';
+  }
+}

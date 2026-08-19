@@ -79,7 +79,7 @@ class CloudSyncConfig {
     }
   }
 
-  /// 已保存配置可用于快捷同步 / 云页操作区。
+  /// 已保存配置可用于「我的 · 同步」入口。
   bool get isReadyForSync {
     if (!hasRequiredFields) return false;
     final fp = connectionFingerprint();

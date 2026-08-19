@@ -3,15 +3,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../../data/repositories/transaction_repository.dart';
-import '../../providers/database_provider.dart';
 import '../../providers/transaction_providers.dart';
 import '../../styles/tokens.dart';
 import '../../utils/app_permissions.dart';
-import '../../widgets/category_icon_view.dart';
+import '../../utils/money_format.dart';
 import '../../widgets/details/details_header.dart';
 import '../../widgets/empty_state.dart';
 import '../../widgets/page_status.dart';
 import '../../widgets/record_fab.dart';
+import '../../widgets/transaction/transaction_row_tile.dart';
 import '../calendar/calendar_page.dart';
 import '../transaction/image_billing_sheet.dart';
 import '../transaction/record_editor_sheet.dart';
@@ -191,7 +191,7 @@ class _DaySection extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  '支 ¥${group.expense.toStringAsFixed(2)}',
+                  '支 ¥${formatMoney(group.expense)}',
                   style: const TextStyle(
                     fontSize: 12,
                     color: PigTokens.textTertiary,
@@ -199,7 +199,7 @@ class _DaySection extends StatelessWidget {
                 ),
                 const SizedBox(width: PigTokens.spaceSm),
                 Text(
-                  '收 ¥${group.income.toStringAsFixed(2)}',
+                  '收 ¥${formatMoney(group.income)}',
                   style: const TextStyle(
                     fontSize: 12,
                     color: PigTokens.textTertiary,
@@ -215,106 +215,17 @@ class _DaySection extends StatelessWidget {
             child: Column(
               children: [
                 for (var i = 0; i < group.items.length; i++) ...[
-                  _TxTile(item: group.items[i]),
+                  TransactionRowTile(
+                    item: group.items[i],
+                    enableLongPressDelete: true,
+                  ),
                   if (i != group.items.length - 1)
-                    const Divider(height: 1, indent: 64),
+                    const Divider(height: 1, indent: 60),
                 ],
               ],
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _TxTile extends ConsumerWidget {
-  const _TxTile({required this.item});
-
-  final TransactionListItem item;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final tx = item.tx;
-    final isExpense = tx.type == 'expense';
-    final amountText =
-        '${isExpense ? '-' : '+'}${tx.amount.toStringAsFixed(2)}';
-
-    return Dismissible(
-      key: ValueKey('tx-${tx.id}'),
-      direction: DismissDirection.endToStart,
-      background: Container(
-        color: PigTokens.danger,
-        alignment: Alignment.centerRight,
-        padding: const EdgeInsets.only(right: PigTokens.spaceXl),
-        child: const Icon(Icons.delete, color: PigTokens.textOnPrimary),
-      ),
-      confirmDismiss: (_) async {
-        final confirmed = await showDialog<bool>(
-              context: context,
-              builder: (ctx) => AlertDialog(
-                title: const Text('删除账单'),
-                content: const Text('确定删除这条账单？'),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(ctx, false),
-                    child: const Text('取消'),
-                  ),
-                  TextButton(
-                    onPressed: () => Navigator.pop(ctx, true),
-                    child: const Text('删除'),
-                  ),
-                ],
-              ),
-            ) ??
-            false;
-        if (!confirmed) return false;
-        await ref.read(transactionRepositoryProvider).delete(tx.id);
-        return true;
-      },
-      onDismissed: (_) {},
-      child: ListTile(
-        onTap: () => showRecordEditorSheet(context, transactionId: tx.id),
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: PigTokens.spaceLg,
-          vertical: PigTokens.spaceXs,
-        ),
-        leading: CircleAvatar(
-          backgroundColor: PigTokens.primarySoft,
-          child: CategoryIconView(
-            name: item.categoryName ?? '未分类',
-            icon: item.categoryIcon,
-            iconType: item.categoryIconType,
-            customIconPath: item.categoryCustomIconPath,
-            color: PigTokens.primary,
-            size: 20,
-          ),
-        ),
-        title: Text(
-          item.categoryName ?? '未分类',
-          style: const TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-        subtitle: Text(
-          [
-            DateFormat('HH:mm').format(tx.happenedAt),
-            if (tx.note != null && tx.note!.isNotEmpty) tx.note!,
-            if (item.tagNames.isNotEmpty) item.tagNames.join(' · '),
-          ].join('  '),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 12, color: PigTokens.textTertiary),
-        ),
-        trailing: Text(
-          amountText,
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w600,
-            color: isExpense ? PigTokens.expense : PigTokens.income,
-          ),
-        ),
       ),
     );
   }

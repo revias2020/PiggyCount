@@ -4,12 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../ai/ai_provider_config.dart';
 import '../../ai/bill_info.dart';
 import '../../providers/ai_providers.dart';
 import '../../providers/ledger_session_provider.dart';
+import '../../services/system/logger_service.dart';
 import '../../styles/tokens.dart';
-import '../../widgets/ai/bill_confirm_card.dart';
-import '../ai/ai_settings_page.dart';
+import '../../widgets/ai/ai_setup_helpers.dart';
+import '../../widgets/ai/bill_select_tile.dart';
 
 /// 图片入账确认流（相册选择 / 分享 / 截图识别共用）。
 Future<void> showImageBillingSheet(
@@ -84,11 +86,18 @@ class _ImageBillingSheet extends ConsumerStatefulWidget {
   ConsumerState<_ImageBillingSheet> createState() => _ImageBillingSheetState();
 }
 
+class _Entry {
+  _Entry(this.bill);
+
+  final BillInfo bill;
+  bool selected = true;
+}
+
 class _ImageBillingSheetState extends ConsumerState<_ImageBillingSheet> {
   bool _loading = true;
+  bool _saving = false;
   String? _error;
-  List<BillInfo> _bills = const [];
-  final _saving = <int>{};
+  List<_Entry> _entries = const [];
 
   @override
   void initState() {
@@ -105,11 +114,19 @@ class _ImageBillingSheetState extends ConsumerState<_ImageBillingSheet> {
       });
       return;
     }
-    final cfg = await ref.read(aiConfigStoreProvider).load();
-    if (!cfg.isConfigured) {
+    String? notReady;
+    try {
+      await ref
+          .read(aiProviderStoreProvider)
+          .resolve(AiCapabilityKind.vision);
+    } on AiCapabilityNotReadyException catch (e) {
+      notReady = e.message;
+      logger.warning('ImageBilling', '能力未就绪: ${e.message}');
+    }
+    if (notReady != null) {
       setState(() {
         _loading = false;
-        _error = '请先配置 AI API Key（需视觉模型）';
+        _error = notReady;
       });
       return;
     }
@@ -120,12 +137,14 @@ class _ImageBillingSheetState extends ConsumerState<_ImageBillingSheet> {
           );
       setState(() {
         _loading = false;
-        _bills = bills;
+        _entries = [for (final b in bills) _Entry(b)];
         if (bills.isEmpty) {
           _error = '未识别到账单，请换一张支付截图';
+          logger.warning('ImageBilling', '未识别到账单 source=${widget.source}');
         }
       });
-    } catch (e) {
+    } catch (e, st) {
+      logger.error('ImageBilling', '识别失败 source=${widget.source}', e, st);
       setState(() {
         _loading = false;
         _error = '识别失败：$e';
@@ -133,39 +152,89 @@ class _ImageBillingSheetState extends ConsumerState<_ImageBillingSheet> {
     }
   }
 
-  Future<void> _confirm(BillInfo bill, int index) async {
-    final ledgerId = ref.read(currentLedgerIdProvider);
-    if (ledgerId == null) return;
-    setState(() => _saving.add(index));
-    try {
-      await ref.read(aiBookkeeperProvider).saveBills(
-            bills: [bill],
-            ledgerId: ledgerId,
-            source: widget.source,
-          );
-      if (!mounted) return;
-      setState(() {
-        _saving.remove(index);
-        _bills = [..._bills]..removeAt(index);
-      });
-      if (_bills.isEmpty && mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('已记账')),
-        );
+  int get _selectedCount => _entries.where((e) => e.selected).length;
+
+  void _selectAll() {
+    setState(() {
+      for (final e in _entries) {
+        e.selected = true;
       }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _saving.remove(index));
+    });
+  }
+
+  void _invertSelection() {
+    setState(() {
+      for (final e in _entries) {
+        e.selected = !e.selected;
+      }
+    });
+  }
+
+  Future<void> _confirmSelected() async {
+    final ledgerId = ref.read(currentLedgerIdProvider);
+    if (ledgerId == null || _saving) return;
+    final selected = [
+      for (var i = 0; i < _entries.length; i++)
+        if (_entries[i].selected) i,
+    ];
+    if (selected.isEmpty) return;
+
+    setState(() => _saving = true);
+    var saved = 0;
+    String? failMsg;
+    final remove = <int>{};
+
+    for (final i in selected) {
+      try {
+        final ids = await ref.read(aiBookkeeperProvider).saveBills(
+              bills: [_entries[i].bill],
+              ledgerId: ledgerId,
+              source: widget.source,
+            );
+        if (ids.isEmpty) {
+          failMsg ??= '部分账单无法保存';
+          continue;
+        }
+        saved++;
+        remove.add(i);
+      } catch (e, st) {
+        logger.error('ImageBilling', '保存失败', e, st);
+        failMsg = '$e';
+        break;
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _saving = false;
+      if (remove.isNotEmpty) {
+        _entries = [
+          for (var i = 0; i < _entries.length; i++)
+            if (!remove.contains(i)) _entries[i],
+        ];
+      }
+    });
+
+    if (_entries.isEmpty) {
+      Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('保存失败：$e')),
+        const SnackBar(content: Text('已记账')),
       );
+      return;
+    }
+
+    if (failMsg != null) {
+      final text = saved > 0
+          ? '已记账 $saved 条，其余失败：$failMsg'
+          : '保存失败：$failMsg';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.viewInsetsOf(context).bottom;
+    final selectedCount = _selectedCount;
     return Padding(
       padding: EdgeInsets.fromLTRB(16, 12, 16, 16 + bottom),
       child: Column(
@@ -196,41 +265,63 @@ class _ImageBillingSheetState extends ConsumerState<_ImageBillingSheet> {
           else ...[
             if (_error != null) ...[
               Text(_error!, style: const TextStyle(color: PigTokens.danger)),
-              if (_error!.contains('API Key'))
-                TextButton(
-                  onPressed: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => const AiSettingsPage(),
-                      ),
+              ?aiSetupTextButton(context, _error),
+            ],
+            if (_entries.isNotEmpty) ...[
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.sizeOf(context).height * 0.45,
+                ),
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: _entries.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (context, i) {
+                    final e = _entries[i];
+                    return BillSelectTile(
+                      bill: e.bill,
+                      selected: e.selected,
+                      onChanged: _saving
+                          ? null
+                          : (v) {
+                              setState(() => e.selected = v ?? false);
+                            },
                     );
                   },
-                  child: const Text('去配置'),
                 ),
-            ],
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                maxHeight: MediaQuery.sizeOf(context).height * 0.55,
               ),
-              child: ListView(
-                shrinkWrap: true,
+              const SizedBox(height: PigTokens.spaceSm),
+              Row(
                 children: [
-                  for (var i = 0; i < _bills.length; i++)
-                    BillConfirmCard(
-                      bill: _bills[i],
-                      busy: _saving.contains(i),
-                      onConfirm: () => _confirm(_bills[i], i),
-                      onDiscard: () {
-                        setState(() {
-                          _bills = [..._bills]..removeAt(i);
-                        });
-                      },
-                    ),
+                  TextButton(
+                    onPressed: _saving ? null : _selectAll,
+                    child: const Text('全选'),
+                  ),
+                  TextButton(
+                    onPressed: _saving ? null : _invertSelection,
+                    child: const Text('反选'),
+                  ),
+                  const Spacer(),
+                  FilledButton(
+                    onPressed: _saving || selectedCount == 0
+                        ? null
+                        : _confirmSelected,
+                    child: _saving
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : Text('确认记账（$selectedCount）'),
+                  ),
                 ],
               ),
-            ),
+            ],
             TextButton(
-              onPressed: () => Navigator.pop(context),
+              onPressed: _saving ? null : () => Navigator.pop(context),
               child: const Text('关闭'),
             ),
           ],

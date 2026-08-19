@@ -21,12 +21,14 @@ class CapsuleSwitcher<T> extends StatelessWidget {
     required this.options,
     required this.onChanged,
     this.height = 40,
+    this.enabled = true,
   });
 
   final T selectedValue;
   final List<CapsuleOption<T>> options;
   final ValueChanged<T> onChanged;
   final double height;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
@@ -52,28 +54,36 @@ class CapsuleSwitcher<T> extends StatelessWidget {
 
   Widget _segment(CapsuleOption<T> option) {
     final selected = selectedValue == option.value;
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: () => onChanged(option.value),
-        borderRadius: BorderRadius.circular((height - 6) / 2),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 160),
-          height: height - 6,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: selected ? PigTokens.primary : Colors.transparent,
-            borderRadius: BorderRadius.circular((height - 6) / 2),
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          child: Text(
-            option.label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: selected ? PigTokens.textOnPrimary : PigTokens.textPrimary,
-              fontWeight: FontWeight.w600,
-              fontSize: 13,
+    final selectedFill = enabled
+        ? PigTokens.primary
+        : PigTokens.primary.withValues(alpha: 0.45);
+    return Opacity(
+      opacity: enabled ? 1 : 0.72,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: enabled ? () => onChanged(option.value) : null,
+          borderRadius: BorderRadius.circular((height - 6) / 2),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            height: height - 6,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: selected ? selectedFill : Colors.transparent,
+              borderRadius: BorderRadius.circular((height - 6) / 2),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Text(
+              option.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: selected
+                    ? PigTokens.textOnPrimary
+                    : PigTokens.textPrimary,
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+              ),
             ),
           ),
         ),

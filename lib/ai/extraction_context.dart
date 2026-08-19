@@ -10,11 +10,6 @@ class AiExtractionContext {
   final List<String> incomeCategories;
   final List<AiTagGroupHint> tagGroups;
 
-  /// 扁平标签名（兼容旧调用）。
-  List<String> get tagNames => [
-        for (final g in tagGroups) ...g.tagLabels,
-      ];
-
   static const AiExtractionContext fallback = AiExtractionContext();
 }
 
@@ -23,12 +18,15 @@ class AiTagGroupHint {
   const AiTagGroupHint({
     required this.name,
     required this.kind,
+    this.scope = 'both',
     this.tags = const [],
   });
 
   final String name;
   /// `string` | `number`
   final String kind;
+  /// `both` | `expense` | `income`
+  final String scope;
   final List<AiTagHint> tags;
 
   List<String> get tagLabels => [for (final t in tags) t.label];

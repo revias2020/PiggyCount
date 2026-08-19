@@ -1,164 +1,35 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../ai/ai_config.dart';
-import '../../ai/openai_compatible_client.dart';
+import '../../ai/ai_provider_config.dart';
+import '../../ai/ai_provider_store.dart';
 import '../../providers/ai_providers.dart';
 import '../../styles/tokens.dart';
-import '../../widgets/capsule_switcher.dart';
+import '../../widgets/ai/ai_setup_helpers.dart';
 import '../../widgets/page_status.dart';
+import 'ai_provider_manage_page.dart';
 
-/// AI 模型配置：默认智谱，可切换 OpenAI 兼容。
-class AiSettingsPage extends ConsumerStatefulWidget {
+/// AI 设置：服务商管理入口 + 文本/视觉能力绑定（ADR-009 / ADR-032）。
+class AiSettingsPage extends ConsumerWidget {
   const AiSettingsPage({super.key});
 
   @override
-  ConsumerState<AiSettingsPage> createState() => _AiSettingsPageState();
-}
+  Widget build(BuildContext context, WidgetRef ref) {
+    final providersAsync = ref.watch(aiProvidersListProvider);
+    final bindingAsync = ref.watch(aiCapabilityBindingProvider);
 
-class _AiSettingsPageState extends ConsumerState<AiSettingsPage> {
-  final _keyCtrl = TextEditingController();
-  final _baseCtrl = TextEditingController();
-  final _textModelCtrl = TextEditingController();
-  final _visionModelCtrl = TextEditingController();
-  final _client = OpenAiCompatibleClient();
-  AiProviderKind _kind = AiProviderKind.zhipu;
-  bool _loading = true;
-  bool _saving = false;
-  bool _testing = false;
-  bool _obscure = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    final cfg = await ref.read(aiConfigStoreProvider).load();
-    if (!mounted) return;
-    setState(() {
-      _kind = cfg.kind;
-      _keyCtrl.text = cfg.apiKey;
-      _baseCtrl.text = cfg.baseUrl;
-      _textModelCtrl.text = cfg.textModel;
-      _visionModelCtrl.text = cfg.visionModel;
-      _loading = false;
-    });
-  }
-
-  @override
-  void dispose() {
-    _keyCtrl.dispose();
-    _baseCtrl.dispose();
-    _textModelCtrl.dispose();
-    _visionModelCtrl.dispose();
-    super.dispose();
-  }
-
-  AiConfig _build() => AiConfig(
-        kind: _kind,
-        apiKey: _keyCtrl.text.trim(),
-        baseUrl: _baseCtrl.text.trim().isEmpty
-            ? (_kind == AiProviderKind.zhipu
-                ? AiConfig.zhipuDefaultBaseUrl
-                : 'https://api.openai.com/v1')
-            : _baseCtrl.text.trim(),
-        textModel: _textModelCtrl.text.trim().isEmpty
-            ? (_kind == AiProviderKind.zhipu
-                ? AiConfig.zhipuDefaultTextModel
-                : 'gpt-4o-mini')
-            : _textModelCtrl.text.trim(),
-        visionModel: _visionModelCtrl.text.trim().isEmpty
-            ? (_kind == AiProviderKind.zhipu
-                ? AiConfig.zhipuDefaultVisionModel
-                : 'gpt-4o-mini')
-            : _visionModelCtrl.text.trim(),
-      );
-
-  Future<void> _save() async {
-    setState(() => _saving = true);
-    await ref.read(aiConfigStoreProvider).save(_build());
-    ref.invalidate(aiConfigProvider);
-    if (!mounted) return;
-    setState(() => _saving = false);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('已保存 AI 配置')),
-    );
-  }
-
-  Future<void> _testConnection() async {
-    if (_testing) return;
-    setState(() => _testing = true);
-    try {
-      await _client.testConnection(_build());
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('连接成功（文本与视觉均可用）')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      await showDialog<void>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('连接失败'),
-          content: Text('$e'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('知道了'),
-            ),
-          ],
-        ),
-      );
-    } finally {
-      if (mounted) setState(() => _testing = false);
-    }
-  }
-
-  void _applyKind(AiProviderKind kind) {
-    setState(() {
-      _kind = kind;
-      if (kind == AiProviderKind.zhipu) {
-        _baseCtrl.text = AiConfig.zhipuDefaultBaseUrl;
-        if (_textModelCtrl.text.isEmpty ||
-            _textModelCtrl.text.startsWith('gpt')) {
-          _textModelCtrl.text = AiConfig.zhipuDefaultTextModel;
-        }
-        if (_visionModelCtrl.text.isEmpty ||
-            _visionModelCtrl.text.startsWith('gpt')) {
-          _visionModelCtrl.text = AiConfig.zhipuDefaultVisionModel;
-        }
-      } else {
-        if (_baseCtrl.text.contains('bigmodel')) {
-          _baseCtrl.text = 'https://api.openai.com/v1';
-        }
-      }
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: PigTokens.scaffoldBackground,
-      appBar: AppBar(
-        title: const Text('AI 模型配置'),
-        actions: [
-          TextButton(
-            onPressed: _saving || _loading || _testing ? null : _save,
-            child: _saving
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Text('保存'),
-          ),
-        ],
-      ),
-      body: _loading
-          ? const AppLoading(message: '加载配置…')
-          : ListView(
+      appBar: AppBar(title: const Text('AI 设置')),
+      body: providersAsync.when(
+        loading: () => const AppLoading(message: '加载配置…'),
+        error: (e, _) => Center(child: Text('$e')),
+        data: (providers) => bindingAsync.when(
+          loading: () => const AppLoading(message: '加载配置…'),
+          error: (e, _) => Center(child: Text('$e')),
+          data: (binding) {
+            final keyed = providers.where((p) => p.isValid).length;
+            return ListView(
               padding: const EdgeInsets.all(PigTokens.spaceLg),
               children: [
                 const Text(
@@ -166,107 +37,191 @@ class _AiSettingsPageState extends ConsumerState<AiSettingsPage> {
                   style: TextStyle(fontSize: 13, color: PigTokens.textTertiary),
                 ),
                 const SizedBox(height: PigTokens.spaceMd),
-                _card(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('服务商',
-                          style: TextStyle(fontWeight: FontWeight.w700)),
-                      const SizedBox(height: PigTokens.spaceSm),
-                      CapsuleSwitcher<AiProviderKind>(
-                        selectedValue: _kind,
-                        onChanged: _applyKind,
-                        options: const [
-                          CapsuleOption(
-                            value: AiProviderKind.zhipu,
-                            label: '智谱',
-                          ),
-                          CapsuleOption(
-                            value: AiProviderKind.openaiCompatible,
-                            label: 'OpenAI 兼容',
-                          ),
-                        ],
-                      ),
-                    ],
+                aiSectionCard(
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(
+                      Icons.cloud_outlined,
+                      color: PigTokens.primary,
+                    ),
+                    title: const Text(
+                      '服务商管理',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    subtitle: Text(
+                      '$keyed/${AiProviderStore.maxCustomProviders} 已配置Key',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () async {
+                      await Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const AiProviderManagePage(),
+                        ),
+                      );
+                      ref.invalidate(aiProvidersListProvider);
+                      ref.invalidate(aiCapabilityBindingProvider);
+                      ref.invalidate(aiMineSubtitleProvider);
+                    },
                   ),
                 ),
                 const SizedBox(height: PigTokens.spaceMd),
-                _card(
+                aiSectionCard(
                   child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      TextField(
-                        controller: _keyCtrl,
-                        obscureText: _obscure,
-                        decoration: InputDecoration(
-                          labelText: 'API Key',
-                          border: const OutlineInputBorder(),
-                          suffixIcon: IconButton(
-                            icon: Icon(
-                              _obscure
-                                  ? Icons.visibility_outlined
-                                  : Icons.visibility_off_outlined,
-                            ),
-                            onPressed: () =>
-                                setState(() => _obscure = !_obscure),
-                          ),
+                      const Text(
+                        '为每个AI能力选择服务商',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: PigTokens.textTertiary,
                         ),
                       ),
                       const SizedBox(height: PigTokens.spaceMd),
-                      TextField(
-                        controller: _baseCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'Base URL',
-                          border: OutlineInputBorder(),
-                          helperText: '智谱默认 open.bigmodel.cn；兼容服务填 /v1 根路径',
-                        ),
+                      _CapabilityTile(
+                        icon: Icons.chat_outlined,
+                        title: '文本对话',
+                        currentId: binding.textProviderId,
+                        allProviders: providers,
+                        providers: providers
+                            .where((p) => p.textReadyForCapability)
+                            .toList(),
+                        onSelected: (id) async {
+                          await ref.read(aiProviderStoreProvider).saveBinding(
+                                binding.copyWith(textProviderId: id),
+                              );
+                          ref.invalidate(aiCapabilityBindingProvider);
+                        },
                       ),
-                      const SizedBox(height: PigTokens.spaceMd),
-                      TextField(
-                        controller: _textModelCtrl,
-                        decoration: const InputDecoration(
-                          labelText: '文本模型',
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      const SizedBox(height: PigTokens.spaceMd),
-                      TextField(
-                        controller: _visionModelCtrl,
-                        decoration: const InputDecoration(
-                          labelText: '视觉模型（截图识别）',
-                          border: OutlineInputBorder(),
-                        ),
+                      const Divider(height: 24),
+                      _CapabilityTile(
+                        icon: Icons.image_outlined,
+                        title: '图片理解',
+                        currentId: binding.visionProviderId,
+                        allProviders: providers,
+                        providers: providers
+                            .where((p) => p.visionReadyForCapability)
+                            .toList(),
+                        onSelected: (id) async {
+                          await ref.read(aiProviderStoreProvider).saveBinding(
+                                binding.copyWith(visionProviderId: id),
+                              );
+                          ref.invalidate(aiCapabilityBindingProvider);
+                        },
                       ),
                     ],
                   ),
                 ),
-                const SizedBox(height: PigTokens.spaceLg),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton(
-                    onPressed: _saving || _testing ? null : _testConnection,
-                    child: _testing
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Text('测试连接'),
-                  ),
-                ),
               ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _CapabilityTile extends StatelessWidget {
+  const _CapabilityTile({
+    required this.icon,
+    required this.title,
+    required this.currentId,
+    required this.allProviders,
+    required this.providers,
+    required this.onSelected,
+  });
+
+  final IconData icon;
+  final String title;
+  final String? currentId;
+  final List<AiServiceProvider> allProviders;
+  final List<AiServiceProvider> providers;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    AiServiceProvider? current;
+    for (final p in allProviders) {
+      if (p.id == currentId) {
+        current = p;
+        break;
+      }
+    }
+    final inPicker = providers.any((p) => p.id == currentId);
+    final label = current == null
+        ? (currentId == null || currentId!.isEmpty ? '未选择' : '（已失效，请重选）')
+        : (inPicker ? current.name : '${current.name}（请重选）');
+
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(icon, color: PigTokens.primary),
+      title: Text(
+        title,
+        style: const TextStyle(fontWeight: FontWeight.w700),
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 120),
+            child: Text(
+              label,
+              textAlign: TextAlign.end,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 13,
+                color: current == null
+                    ? PigTokens.textTertiary
+                    : PigTokens.textSecondary,
+              ),
             ),
+          ),
+          const Icon(Icons.chevron_right, color: PigTokens.textTertiary),
+        ],
+      ),
+      onTap: () => _pick(context),
     );
   }
 
-  Widget _card({required Widget child}) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(PigTokens.spaceLg - 2),
-      decoration: BoxDecoration(
-        color: PigTokens.surface,
-        borderRadius: BorderRadius.circular(PigTokens.radiusCard),
+  Future<void> _pick(BuildContext context) async {
+    if (providers.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('暂无已测通的服务商，请先到服务商编辑页保存以完成连接测试'),
+        ),
+      );
+      return;
+    }
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text(
+                '选择服务商',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+              ),
+            ),
+            for (final p in providers)
+              ListTile(
+                title: Text(p.name),
+                subtitle: Text(
+                  p.isValid ? '已配置 Key' : '未配置 Key',
+                  style: const TextStyle(fontSize: 12),
+                ),
+                trailing: p.id == currentId
+                    ? const Icon(Icons.check, color: PigTokens.primary)
+                    : null,
+                onTap: () => Navigator.pop(ctx, p.id),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
       ),
-      child: child,
     );
+    if (selected != null) onSelected(selected);
   }
 }

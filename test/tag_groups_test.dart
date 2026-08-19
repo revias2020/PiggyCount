@@ -16,6 +16,10 @@ void main() {
 
   setUp(() async {
     db = AppDatabase.memory();
+    // ADR-039：onCreate 已种出厂目录；本组测标签规则，先清空以免撞名。
+    await db.delete(db.transactionTags).go();
+    await db.delete(db.tags).go();
+    await db.delete(db.tagGroups).go();
     tags = TagRepository(db);
     final ledgers = LedgerRepository(db);
     ledgerId = await ledgers.create('测试账本');
@@ -31,16 +35,18 @@ void main() {
     await db.close();
   });
 
-  test('升级语义：默认字符串组存在且可挂标签', () async {
-    final bundles = await tags.getBundles();
-    expect(bundles, isNotEmpty);
-    expect(bundles.first.group.name, TagRepository.defaultGroupName);
-    expect(bundles.first.isString, isTrue);
-
+  test('无组创建落入外部导入（ADR-039）', () async {
     final id = await tags.create('咖啡');
+    final group =
+        await tags.findGroupByName(TagRepository.ungroupedFallbackGroupName);
+    expect(group, isNotNull);
+    expect(group!.name, '外部导入');
+    expect(group.kind, TagGroupKind.string);
+    expect(group.scope, TagGroupScope.both);
+
     final all = await tags.getAll();
-    expect(all.single.id, id);
-    expect(all.single.groupId, bundles.first.group.id);
+    final created = all.firstWhere((t) => t.id == id);
+    expect(created.groupId, group.id);
   });
 
   test('数值组禁重叠且金额落区间选标', () async {

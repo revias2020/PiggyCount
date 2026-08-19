@@ -10,17 +10,20 @@ import '../../utils/report_period.dart';
 import '../../widgets/ai_fab.dart';
 import '../../widgets/empty_state.dart';
 import '../../widgets/page_status.dart';
-import '../../widgets/report/report_compare_chart.dart';
+import '../../widgets/report/report_compare_rank_card.dart';
 import '../../widgets/report/report_composition_card.dart';
-import '../../widgets/report/report_rank_list.dart';
+import '../../widgets/report/report_period_pickers.dart';
 import '../../widgets/report/report_summary_card.dart';
 import '../../widgets/report/report_trend_chart.dart';
 import '../ai/ai_chat_page.dart';
+import '../transaction/category_detail_page.dart';
+import '../transaction/rank_full_page.dart';
 import '../transaction/record_editor_sheet.dart';
+import '../transaction/tag_detail_page.dart';
 
 /// 「报表」：周/月/年/自定义 + 汇总/趋势/构成/对比/排行。
 ///
-/// 布局对照 docs/assets fig4、fig6；不含「订阅设置」。
+/// 报表主页：周期切换、汇总与图表卡；不含「订阅设置」。
 class ReportPage extends ConsumerWidget {
   const ReportPage({super.key});
 
@@ -131,26 +134,26 @@ class ReportPage extends ConsumerWidget {
       return;
     }
     final anchor = ref.read(reportAnchorProvider);
-    if (scope == ReportScope.year) {
-      final picked = await showDatePicker(
-        context: context,
-        initialDate: anchor,
-        firstDate: DateTime(2000),
-        lastDate: DateTime(2100),
-        helpText: '选择年份（取该日所在年）',
-      );
-      if (picked != null) {
-        ref.read(reportAnchorProvider.notifier).state = picked;
-      }
-      return;
+    DateTime? picked;
+    switch (scope) {
+      case ReportScope.week:
+        picked = await showReportWeekPicker(
+          context,
+          initialAnchor: anchor,
+        );
+      case ReportScope.month:
+        picked = await showReportMonthPicker(
+          context,
+          initialMonth: anchor,
+        );
+      case ReportScope.year:
+        picked = await showReportYearPicker(
+          context,
+          initialYear: anchor,
+        );
+      case ReportScope.custom:
+        return;
     }
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: anchor,
-      firstDate: DateTime(2000),
-      lastDate: DateTime(2100),
-      helpText: scope == ReportScope.week ? '选择周内任意一天' : '选择月份（取该日所在月）',
-    );
     if (picked != null) {
       ref.read(reportAnchorProvider.notifier).state = picked;
     }
@@ -237,23 +240,58 @@ class _ReportBody extends StatelessWidget {
           dim: dim,
           onDimChanged: onDimChanged,
           moneyType: moneyType,
+          onSliceTap: (slice) => _openCompositionDetail(context, slice),
         ),
-        if (snap.compareSeries.isNotEmpty)
-          ReportCompareChart(
-            title: compareTitle,
-            points: snap.compareSeries,
-            highlightStart: period.start,
-          ),
-        ReportRankList(
-          title: '$periodLabel$typeLabel排行',
-          items: snap.ranking,
+        ReportCompareRankCard(
+          compareTitle: compareTitle,
+          rankTitle: '$periodLabel$typeLabel排行',
+          comparePoints: snap.compareSeries,
+          highlightStart: period.start,
+          rankItems: snap.ranking,
           moneyType: moneyType,
-          onTap: (item) => showRecordEditorSheet(
+          onRankTap: (item) => showRecordEditorSheet(
             context,
             transactionId: item.id,
           ),
+          onViewAll: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => RankFullPage(
+                  period: period,
+                  moneyType: moneyType,
+                  expenseTotal: snap.expenseTotal,
+                  incomeTotal: snap.incomeTotal,
+                ),
+              ),
+            );
+          },
         ),
       ],
+    );
+  }
+
+  void _openCompositionDetail(BuildContext context, CompositionSlice slice) {
+    if (dim == CompositionDim.tag) {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => TagDetailPage(
+            tagId: slice.id,
+            tagName: slice.name,
+            lockedPeriod: period,
+          ),
+        ),
+      );
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => CategoryDetailPage(
+          categoryId: slice.id,
+          categoryName: slice.name,
+          lockedPeriod: period,
+          includeChildren: dim == CompositionDim.mainCategory && slice.id != null,
+        ),
+      ),
     );
   }
 
@@ -295,38 +333,42 @@ class _ScopeTabs extends StatelessWidget {
               Expanded(
                 child: InkWell(
                   onTap: () => onChanged(t.$1),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.symmetric(
-                          vertical: PigTokens.spaceMd,
-                        ),
-                        child: AnimatedDefaultTextStyle(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      vertical: PigTokens.spaceMd,
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        AnimatedDefaultTextStyle(
                           duration: const Duration(milliseconds: 160),
                           style: TextStyle(
                             fontSize: 15,
                             fontWeight: scope == t.$1
                                 ? FontWeight.w700
                                 : FontWeight.w500,
+                            // 选中近黑加粗，短蓝线承担聚焦色（跟参考图）。
                             color: scope == t.$1
-                                ? PigTokens.primary
+                                ? PigTokens.textPrimary
                                 : PigTokens.textSecondary,
                           ),
                           child: Text(t.$2, textAlign: TextAlign.center),
                         ),
-                      ),
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 180),
-                        height: 2.5,
-                        decoration: BoxDecoration(
-                          color: scope == t.$1
-                              ? PigTokens.primary
-                              : Colors.transparent,
-                          borderRadius: BorderRadius.circular(2),
+                        const SizedBox(height: 6),
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 180),
+                          // 约文字宽度 40–50%，不铺满 Tab 格、也不铺满整段字。
+                          width: scope == t.$1 ? 18 : 0,
+                          height: 3,
+                          decoration: BoxDecoration(
+                            color: scope == t.$1
+                                ? PigTokens.primary
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(2),
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -362,48 +404,21 @@ class _PeriodAndTypeBar extends StatelessWidget {
       color: PigTokens.surface,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(
-          PigTokens.spaceXs,
+          PigTokens.spaceMd,
           0,
           PigTokens.spaceMd,
           PigTokens.spaceMd,
         ),
         child: Row(
           children: [
-            if (scope != ReportScope.custom)
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                onPressed: onPrev,
-                icon: const Icon(Icons.chevron_left),
-              )
-            else
-              const SizedBox(width: PigTokens.spaceSm),
-            Expanded(
-              child: GestureDetector(
-                onTap: onPickPeriod,
-                child: Text(
-                  _label(),
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: PigTokens.textPrimary,
-                  ),
-                ),
-              ),
+            _CompactPeriodSwitcher(
+              label: _label(),
+              showArrows: scope != ReportScope.custom,
+              onPrev: onPrev,
+              onNext: onNext,
+              onTapLabel: onPickPeriod,
             ),
-            if (scope != ReportScope.custom)
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                onPressed: onNext,
-                icon: const Icon(Icons.chevron_right),
-              )
-            else
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                onPressed: onPickPeriod,
-                icon: const Icon(Icons.date_range, size: 20),
-              ),
-            const SizedBox(width: PigTokens.spaceXs),
+            const Spacer(),
             _TypeToggle(value: moneyType, onChanged: onTypeChanged),
           ],
         ),
@@ -423,7 +438,7 @@ class _PeriodAndTypeBar extends StatelessWidget {
             '${start.month}/${start.day}-${endInclusive.month}/${endInclusive.day}';
         return isThisWeek ? '$range(本周)' : range;
       case ReportScope.month:
-        return DateFormat('y年 M月').format(period.anchor);
+        return DateFormat('y年M月').format(period.anchor);
       case ReportScope.year:
         return '${period.anchor.year}年';
       case ReportScope.custom:
@@ -431,6 +446,98 @@ class _PeriodAndTypeBar extends StatelessWidget {
         final e = period.end.subtract(const Duration(days: 1));
         return '${s.month}/${s.day} - ${e.month}/${e.day}';
     }
+  }
+}
+
+/// 靠左紧凑 `< 文案 >`（ADR-016）；自定义无箭头，仅点文案。
+class _CompactPeriodSwitcher extends StatelessWidget {
+  const _CompactPeriodSwitcher({
+    required this.label,
+    required this.showArrows,
+    required this.onPrev,
+    required this.onNext,
+    required this.onTapLabel,
+  });
+
+  final String label;
+  final bool showArrows;
+  final VoidCallback onPrev;
+  final VoidCallback onNext;
+  final VoidCallback onTapLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: PigTokens.surfaceSecondary,
+      borderRadius: BorderRadius.circular(PigTokens.radiusPill),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (showArrows)
+              _CompactChevron(icon: Icons.chevron_left, onTap: onPrev),
+            GestureDetector(
+              onTap: onTapLabel,
+              behavior: HitTestBehavior.opaque,
+              child: Padding(
+                padding: EdgeInsets.symmetric(
+                  horizontal: showArrows ? PigTokens.spaceXs : PigTokens.spaceMd,
+                  vertical: PigTokens.spaceSm,
+                ),
+                child: Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: PigTokens.textPrimary,
+                  ),
+                ),
+              ),
+            ),
+            if (showArrows)
+              _CompactChevron(icon: Icons.chevron_right, onTap: onNext)
+            else
+              Padding(
+                padding: const EdgeInsets.only(right: PigTokens.spaceSm),
+                child: IconButton(
+                  onPressed: onTapLabel,
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 28,
+                    minHeight: 28,
+                  ),
+                  icon: const Icon(
+                    Icons.date_range,
+                    size: 18,
+                    color: PigTokens.textSecondary,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CompactChevron extends StatelessWidget {
+  const _CompactChevron({required this.icon, required this.onTap});
+
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      customBorder: const CircleBorder(),
+      child: Padding(
+        padding: const EdgeInsets.all(4),
+        child: Icon(icon, size: 20, color: PigTokens.textSecondary),
+      ),
+    );
   }
 }
 

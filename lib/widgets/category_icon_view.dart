@@ -6,7 +6,7 @@ import '../services/custom_icon_service.dart';
 import '../styles/tokens.dart';
 import '../utils/category_icons.dart';
 
-/// 统一渲染分类图标：Material 或本地自定义图。
+/// 统一渲染分类图标：Material 彩标或本地自定义图。
 class CategoryIconView extends StatelessWidget {
   const CategoryIconView({
     super.key,
@@ -32,11 +32,11 @@ class CategoryIconView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final fallbackColor = color ?? categoryIconColor(name, icon: icon);
+    final tint = color ?? categoryIconColor(icon);
     if (!_isCustom) {
       return Icon(
         categoryIconData(icon),
-        color: fallbackColor,
+        color: tint,
         size: size,
       );
     }
@@ -47,7 +47,7 @@ class CategoryIconView extends StatelessWidget {
         if (path == null) {
           return Icon(
             categoryIconData(icon),
-            color: fallbackColor,
+            color: tint,
             size: size,
           );
         }
@@ -60,7 +60,7 @@ class CategoryIconView extends StatelessWidget {
             fit: BoxFit.cover,
             errorBuilder: (_, error, stackTrace) => Icon(
               categoryIconData(icon),
-              color: fallbackColor,
+              color: tint,
               size: size,
             ),
           ),
@@ -70,7 +70,7 @@ class CategoryIconView extends StatelessWidget {
   }
 }
 
-/// 圆形底上的分类图标（管理页 / 账单行常用）。
+/// 圆形淡底上的分类彩标（管理页 / 账单行 / 记一笔常用）。
 class CategoryIconCircle extends StatelessWidget {
   const CategoryIconCircle({
     super.key,
@@ -93,7 +93,7 @@ class CategoryIconCircle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = categoryIconColor(name, icon: icon);
+    final tint = categoryIconColor(icon);
     final isCustom = iconType == 'custom' &&
         customIconPath != null &&
         customIconPath!.isNotEmpty;
@@ -105,7 +105,7 @@ class CategoryIconCircle extends StatelessWidget {
         color: backgroundColor ??
             (isCustom
                 ? PigTokens.surfaceSecondary
-                : color.withValues(alpha: 0.14)),
+                : tint.withValues(alpha: 0.10)),
         shape: BoxShape.circle,
       ),
       clipBehavior: Clip.antiAlias,
@@ -118,7 +118,7 @@ class CategoryIconCircle extends StatelessWidget {
                 if (path == null) {
                   return Icon(
                     categoryIconData(icon),
-                    color: color,
+                    color: tint,
                     size: iconSize,
                   );
                 }
@@ -129,7 +129,7 @@ class CategoryIconCircle extends StatelessWidget {
                   fit: BoxFit.cover,
                   errorBuilder: (_, error, stackTrace) => Icon(
                     categoryIconData(icon),
-                    color: color,
+                    color: tint,
                     size: iconSize,
                   ),
                 );
@@ -137,7 +137,7 @@ class CategoryIconCircle extends StatelessWidget {
             )
           : Icon(
               categoryIconData(icon),
-              color: color,
+              color: tint,
               size: iconSize,
             ),
     );

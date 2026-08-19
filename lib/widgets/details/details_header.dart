@@ -3,11 +3,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../../providers/ledger_session_provider.dart';
+import '../../services/sync/cloud_sync_actions.dart';
+import '../../services/sync/cloud_sync_providers.dart';
 import '../../styles/tokens.dart';
+import '../../utils/money_format.dart';
 import '../ledger_list_sheet.dart';
 import 'year_month_grid_sheet.dart';
 
-/// 明细一体顶栏：品牌 + 账本 + 日历 + 搜索。
+/// 明细一体顶栏：品牌图标 + 账本 + 日历 + 同步 + 搜索。
 class DetailsTopBar extends ConsumerWidget {
   const DetailsTopBar({
     super.key,
@@ -38,21 +41,12 @@ class DetailsTopBar extends ConsumerWidget {
             children: [
               Image.asset(
                 'assets/brand/piggyCount.png',
-                width: 28,
-                height: 28,
+                width: 34,
+                height: 34,
                 errorBuilder: (_, _, _) => const Icon(
                   Icons.savings_outlined,
                   color: PigTokens.primary,
-                  size: 28,
-                ),
-              ),
-              const SizedBox(width: PigTokens.spaceSm),
-              const Text(
-                '小猪记账',
-                style: TextStyle(
-                  fontSize: 17,
-                  fontWeight: FontWeight.w700,
-                  color: PigTokens.textPrimary,
+                  size: 34,
                 ),
               ),
               const SizedBox(width: PigTokens.spaceMd),
@@ -62,15 +56,10 @@ class DetailsTopBar extends ConsumerWidget {
                   child: InkWell(
                     borderRadius: BorderRadius.circular(PigTokens.radiusPill),
                     onTap: () => showLedgerListSheet(context),
-                    child: Container(
+                    child: Padding(
                       padding: const EdgeInsets.symmetric(
-                        horizontal: PigTokens.spaceMd,
-                        vertical: PigTokens.spaceXs + 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: PigTokens.primarySoft,
-                        borderRadius:
-                            BorderRadius.circular(PigTokens.radiusPill),
+                        horizontal: 8,
+                        vertical: 6,
                       ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
@@ -80,15 +69,16 @@ class DetailsTopBar extends ConsumerWidget {
                               name,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
-                                fontSize: 13,
+                                fontSize: 15,
                                 fontWeight: FontWeight.w500,
                                 color: PigTokens.primary,
                               ),
                             ),
                           ),
+                          const SizedBox(width: 2),
                           const Icon(
                             Icons.keyboard_arrow_down_rounded,
-                            size: 18,
+                            size: 20,
                             color: PigTokens.primary,
                           ),
                         ],
@@ -103,6 +93,7 @@ class DetailsTopBar extends ConsumerWidget {
                 icon: const Icon(Icons.calendar_month_outlined),
                 color: PigTokens.textPrimary,
               ),
+              _DetailsSyncButton(),
               IconButton(
                 tooltip: '搜索',
                 onPressed: onOpenSearch,
@@ -113,6 +104,22 @@ class DetailsTopBar extends ConsumerWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _DetailsSyncButton extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final cfg = ref.watch(cloudSyncConfigProvider).valueOrNull;
+    final ready = cfg != null && cfg.isReadyForSync;
+    return IconButton(
+      tooltip: ready ? '同步' : '云服务不可用，请确认配置信息',
+      onPressed: ready
+          ? () => runWorkspaceSync(context: context, ref: ref)
+          : null,
+      icon: const Icon(Icons.sync_outlined),
+      color: ready ? PigTokens.textPrimary : PigTokens.textTertiary,
     );
   }
 }
@@ -242,8 +249,10 @@ class _Metric extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final text = value < 0
-        ? value.toStringAsFixed(value.abs() >= 100 ? 0 : 2)
-        : _formatCompact(value);
+        ? (value.abs() >= 100
+            ? value.toStringAsFixed(0)
+            : value.toStringAsFixed(2))
+        : formatMoneyCompact(value);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -269,19 +278,5 @@ class _Metric extends StatelessWidget {
         ),
       ],
     );
-  }
-
-  String _formatCompact(double v) {
-    if (v >= 1000) {
-      final s = v.toStringAsFixed(v == v.roundToDouble() ? 0 : 2);
-      // 千分位
-      final parts = s.split('.');
-      final whole = parts[0].replaceAllMapped(
-        RegExp(r'(\d)(?=(\d{3})+(?!\d))'),
-        (m) => '${m[1]},',
-      );
-      return parts.length > 1 ? '$whole.${parts[1]}' : whole;
-    }
-    return v.toStringAsFixed(v == v.roundToDouble() ? 0 : 2);
   }
 }

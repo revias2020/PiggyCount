@@ -3,7 +3,8 @@ import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
-import 'ai_config.dart';
+import '../services/system/logger_service.dart';
+import 'ai_provider_config.dart';
 
 /// OpenAI 兼容 Chat Completions（智谱与自定义共用）。
 class OpenAiCompatibleClient {
@@ -12,12 +13,27 @@ class OpenAiCompatibleClient {
 
   final http.Client _http;
 
+  /// 连接测试专用 Client；[cancelTests] 时 close，打断进行中的测连。
+  http.Client? _testHttp;
+  int _testGeneration = 0;
+
+  static const testTimeout = Duration(seconds: 20);
+  static const requestTimeout = Duration(seconds: 90);
+
+  /// 取消进行中的连接测试（改 Key/URL/模型时调用）。
+  void cancelTests() {
+    _testGeneration++;
+    _testHttp?.close();
+    _testHttp = null;
+  }
+
   /// 纯文本对话。
   Future<String> chat({
-    required AiConfig config,
+    required AiServiceProvider provider,
     required String userPrompt,
     String? systemPrompt,
     double temperature = 0.3,
+    Duration? timeout,
   }) async {
     final messages = <Map<String, dynamic>>[
       if (systemPrompt != null && systemPrompt.isNotEmpty)
@@ -25,19 +41,21 @@ class OpenAiCompatibleClient {
       {'role': 'user', 'content': userPrompt},
     ];
     return _postChat(
-      config: config,
-      model: config.textModel,
+      provider: provider,
+      model: provider.textModel,
       messages: messages,
       temperature: temperature,
+      timeout: timeout ?? requestTimeout,
     );
   }
 
   /// 图片理解：将 [imageBytes] 以 data URL 传入。
   Future<String> vision({
-    required AiConfig config,
+    required AiServiceProvider provider,
     required Uint8List imageBytes,
     required String prompt,
     String mimeType = 'image/jpeg',
+    Duration? timeout,
   }) async {
     final b64 = base64Encode(imageBytes);
     final messages = [
@@ -53,46 +71,108 @@ class OpenAiCompatibleClient {
       },
     ];
     return _postChat(
-      config: config,
-      model: config.visionModel,
+      provider: provider,
+      model: provider.visionModel,
       messages: messages,
       temperature: 0.2,
+      timeout: timeout ?? requestTimeout,
     );
   }
 
-  /// 连接测试：先文本短 chat，通过后再测视觉；任一项失败标明阶段。
-  Future<void> testConnection(AiConfig config) async {
-    if (!config.isConfigured) {
-      throw AiClientException('请先填写 API Key');
-    }
-    try {
-      final text = await chat(config: config, userPrompt: 'hi');
+  /// 测试文本模型（timeout 20s）。
+  Future<void> testText(AiServiceProvider provider) async {
+    await _runTest((client, gen) async {
+      if (!provider.isValid) {
+        throw AiClientException('请先填写 API Key');
+      }
+      if (!provider.supportsText) {
+        throw AiClientException('请先填写文本模型');
+      }
+      final text = await _postChat(
+        provider: provider,
+        model: provider.textModel,
+        messages: [
+          {'role': 'user', 'content': 'hi'},
+        ],
+        temperature: 0.3,
+        timeout: testTimeout,
+        httpClient: client,
+      );
+      _ensureNotCancelled(gen);
       if (text.trim().isEmpty) {
         throw AiClientException('文本模型返回空响应');
       }
-    } on AiClientException catch (e) {
-      throw AiClientException('文本模型：${e.message}');
-    } catch (e) {
-      throw AiClientException('文本模型：$e');
-    }
+    });
+  }
 
-    try {
-      final visionReply = await vision(
-        config: config,
-        imageBytes: Uint8List.fromList(_testJpegBytes),
-        prompt: 'hi',
+  /// 测试视觉模型（timeout 20s）。
+  Future<void> testVision(AiServiceProvider provider) async {
+    await _runTest((client, gen) async {
+      if (!provider.isValid) {
+        throw AiClientException('请先填写 API Key');
+      }
+      if (!provider.supportsVision) {
+        throw AiClientException('请先填写视觉模型');
+      }
+      final reply = await _postChat(
+        provider: provider,
+        model: provider.visionModel,
+        messages: [
+          {
+            'role': 'user',
+            'content': [
+              {'type': 'text', 'text': 'hi'},
+              {
+                'type': 'image_url',
+                'image_url': {
+                  'url':
+                      'data:image/jpeg;base64,${base64Encode(_testJpegBytes)}',
+                },
+              },
+            ],
+          },
+        ],
+        temperature: 0.2,
+        timeout: testTimeout,
+        httpClient: client,
       );
-      if (visionReply.trim().isEmpty) {
+      _ensureNotCancelled(gen);
+      if (reply.trim().isEmpty) {
         throw AiClientException('视觉模型返回空响应');
       }
-    } on AiClientException catch (e) {
-      throw AiClientException('视觉模型：${e.message}');
+    });
+  }
+
+  Future<void> _runTest(
+    Future<void> Function(http.Client client, int gen) body,
+  ) async {
+    final gen = ++_testGeneration;
+    final client = http.Client();
+    _testHttp?.close();
+    _testHttp = client;
+    try {
+      await body(client, gen);
+      _ensureNotCancelled(gen);
+    } on AiTestCancelledException {
+      rethrow;
     } catch (e) {
-      throw AiClientException('视觉模型：$e');
+      _ensureNotCancelled(gen);
+      rethrow;
+    } finally {
+      if (identical(_testHttp, client)) {
+        _testHttp = null;
+      }
+      client.close();
     }
   }
 
-  /// 最小合法 JPEG（连接测试用，64×64）。
+  void _ensureNotCancelled(int gen) {
+    if (gen != _testGeneration) {
+      throw AiTestCancelledException();
+    }
+  }
+
+  /// 最小合法 JPEG（连接测试用）。
   static final List<int> _testJpegBytes = base64Decode(
     '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAUDBAQEAwUEBAQFBQUGBwwIBwcHBw8LCwkM'
     'EQ8SEhEPERETFhwXExQaFRERGCEYGh0dHx8fExciJCIeJBweHx7/2wBDAQUFBQcGBw4I'
@@ -111,38 +191,54 @@ class OpenAiCompatibleClient {
   );
 
   Future<String> _postChat({
-    required AiConfig config,
+    required AiServiceProvider provider,
     required String model,
     required List<Map<String, dynamic>> messages,
     required double temperature,
+    required Duration timeout,
+    http.Client? httpClient,
   }) async {
-    if (!config.isConfigured) {
-      throw AiClientException('未配置 API Key，请先到「我的 → AI 模型配置」填写');
+    if (!provider.isValid) {
+      throw AiClientException('未配置 API Key，请先到「我的 → AI 设置」填写');
     }
-    final base = config.baseUrl.replaceAll(RegExp(r'/+$'), '');
+    final base = provider.baseUrl.replaceAll(RegExp(r'/+$'), '');
     final uri = Uri.parse('$base/chat/completions');
     final body = jsonEncode({
       'model': model,
       'messages': messages,
       'temperature': temperature,
     });
-    final response = await _http
-        .post(
-          uri,
-          headers: {
-            'Authorization': 'Bearer ${config.apiKey.trim()}',
-            'Content-Type': 'application/json',
-          },
-          body: body,
-        )
-        .timeout(const Duration(seconds: 90));
-
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw AiClientException(
-        'AI 请求失败(${response.statusCode}): ${_shortBody(response.body)}',
-      );
+    final client = httpClient ?? _http;
+    late final http.Response response;
+    try {
+      response = await client
+          .post(
+            uri,
+            headers: {
+              'Authorization': 'Bearer ${provider.apiKey.trim()}',
+              'Content-Type': 'application/json',
+            },
+            body: body,
+          )
+          .timeout(timeout);
+    } on http.ClientException catch (e) {
+      // Client 被 cancelTests close 时常见
+      if (e.message.contains('closed') || e.message.contains('Connection')) {
+        throw AiTestCancelledException();
+      }
+      logger.error('AI', '网络异常 model=$model', e);
+      rethrow;
     }
-    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+
+    // 部分厂商错误体为 UTF-8 但未声明 charset，response.body 会按 Latin-1 乱码。
+    final responseText = utf8.decode(response.bodyBytes, allowMalformed: true);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      final msg =
+          'AI 请求失败(${response.statusCode}): ${_shortBody(responseText)}';
+      logger.error('AI', 'HTTP ${response.statusCode} model=$model');
+      throw AiClientException(msg);
+    }
+    final decoded = jsonDecode(responseText) as Map<String, dynamic>;
     final choices = decoded['choices'];
     if (choices is! List || choices.isEmpty) {
       throw AiClientException('AI 响应无 choices');
@@ -150,7 +246,6 @@ class OpenAiCompatibleClient {
     final message = choices.first['message'] as Map<String, dynamic>?;
     final content = message?['content'];
     if (content is String && content.trim().isNotEmpty) return content;
-    // 部分兼容实现把 content 做成多段
     if (content is List) {
       final buf = StringBuffer();
       for (final part in content) {
@@ -165,7 +260,7 @@ class OpenAiCompatibleClient {
   }
 
   String _shortBody(String body) {
-    final t = body.trim();
+    final t = sanitizeLogText(body.trim());
     return t.length > 200 ? '${t.substring(0, 200)}…' : t;
   }
 }
@@ -177,3 +272,6 @@ class AiClientException implements Exception {
   @override
   String toString() => message;
 }
+
+/// 测连被用户取消（改凭证等）。
+class AiTestCancelledException implements Exception {}

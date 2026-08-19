@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_medium_name">收支速览·中</string>
+    <string name="widget_glance_small_name">收支速览·小</string>
+    <string name="widget_description">查看今日和本月的收支情况</string>
+    <string name="widget_glance_small_description">今日支出一眼可见，点按直接记一笔</string>
+</resources>

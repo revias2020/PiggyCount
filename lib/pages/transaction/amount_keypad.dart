@@ -22,13 +22,16 @@ class AmountKeypad extends StatelessWidget {
   final VoidCallback onSaveAndContinue;
 
   static const _keyRadius = 10.0;
+  /// 压矮后的键高（原 48）。
+  static const _keyHeight = 42.0;
+  static const _keyPad = 3.0;
 
   @override
   Widget build(BuildContext context) {
     Widget key(String label, {VoidCallback? onTap, Color? color}) {
       return Expanded(
         child: Padding(
-          padding: const EdgeInsets.all(PigTokens.spaceXs),
+          padding: const EdgeInsets.all(_keyPad),
           child: Material(
             color: PigTokens.surfaceSecondary,
             borderRadius: BorderRadius.circular(_keyRadius),
@@ -36,7 +39,7 @@ class AmountKeypad extends StatelessWidget {
               borderRadius: BorderRadius.circular(_keyRadius),
               onTap: onTap ?? () => onKey(label),
               child: SizedBox(
-                height: 48,
+                height: _keyHeight,
                 child: Center(
                   child: Text(
                     label,
@@ -57,7 +60,7 @@ class AmountKeypad extends StatelessWidget {
     Widget iconKey(IconData icon, VoidCallback onTap) {
       return Expanded(
         child: Padding(
-          padding: const EdgeInsets.all(PigTokens.spaceXs),
+          padding: const EdgeInsets.all(_keyPad),
           child: Material(
             color: PigTokens.surfaceSecondary,
             borderRadius: BorderRadius.circular(_keyRadius),
@@ -65,7 +68,7 @@ class AmountKeypad extends StatelessWidget {
               borderRadius: BorderRadius.circular(_keyRadius),
               onTap: onTap,
               child: SizedBox(
-                height: 48,
+                height: _keyHeight,
                 child: Icon(icon, color: PigTokens.textPrimary),
               ),
             ),
@@ -100,33 +103,42 @@ class AmountKeypad extends StatelessWidget {
             key('0'),
             Expanded(
               child: Padding(
-                padding: const EdgeInsets.all(PigTokens.spaceXs),
+                padding: const EdgeInsets.all(_keyPad),
                 child: OutlinedButton(
                   onPressed: onSaveAndContinue,
                   style: OutlinedButton.styleFrom(
                     foregroundColor: PigTokens.primary,
                     side: const BorderSide(color: PigTokens.primarySoft),
-                    minimumSize: const Size.fromHeight(48),
+                    minimumSize: const Size.fromHeight(_keyHeight),
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(_keyRadius),
                     ),
                   ),
-                  child: const Text(
-                    '再记一笔',
-                    style: TextStyle(fontWeight: FontWeight.w600),
+                  child: const FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      '再记一笔',
+                      maxLines: 1,
+                      softWrap: false,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
+                      ),
+                    ),
                   ),
                 ),
               ),
             ),
             Expanded(
               child: Padding(
-                padding: const EdgeInsets.all(PigTokens.spaceXs),
+                padding: const EdgeInsets.all(_keyPad),
                 child: FilledButton(
                   onPressed: onSave,
                   style: FilledButton.styleFrom(
                     backgroundColor: PigTokens.primary,
                     foregroundColor: PigTokens.textOnPrimary,
-                    minimumSize: const Size.fromHeight(48),
+                    minimumSize: const Size.fromHeight(_keyHeight),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(_keyRadius),
                     ),

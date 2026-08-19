@@ -4,9 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:reorderable_grid_view/reorderable_grid_view.dart';
-import 'package:share_plus/share_plus.dart';
 
 import '../../data/app_database.dart';
 import '../../data/repositories/category_repository.dart';
@@ -14,10 +12,13 @@ import '../../providers/database_provider.dart';
 import '../../providers/transaction_providers.dart';
 import '../../services/csv/category_csv_service.dart';
 import '../../services/custom_icon_service.dart';
+import '../../services/system/local_export_service.dart';
 import '../../styles/tokens.dart';
 import '../../utils/category_icons.dart';
 import '../../widgets/category_icon_view.dart';
+import '../../widgets/import_progress_layer.dart';
 import '../../widgets/page_status.dart';
+import '../../widgets/workspace_sheet.dart';
 
 /// 记账分类管理：主分类网格 + 详情弹层管子分类（固定两层）。
 class CategoryManagePage extends ConsumerStatefulWidget {
@@ -71,20 +72,21 @@ class _CategoryManagePageState extends ConsumerState<CategoryManagePage> {
     setState(() => _busy = true);
     try {
       final filterKind = scope == 'all' ? null : scope;
-      final dir = await getTemporaryDirectory();
-      final stamp = DateTime.now().millisecondsSinceEpoch;
+      final stamp = LocalExportService.fileStamp();
       final name = filterKind == null
           ? 'piggy_categories_$stamp.zip'
           : 'piggy_categories_${filterKind}_$stamp.zip';
+      final dir = await LocalExportService.resolveDirectory();
       final path = p.join(dir.path, name);
       await _csv.exportZip(outputPath: path, filterKind: filterKind);
-      await Share.shareXFiles(
-        [XFile(path, mimeType: 'application/zip')],
-        subject: '小猪记账分类',
+      final result = await LocalExportService.finalize(
+        path: path,
+        mimeType: 'application/zip',
+        shareSubject: '小猪记账分类',
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已生成分类包（含自定义图标），请选择分享或保存位置')),
+        SnackBar(content: Text(result.successMessage)),
       );
     } catch (e) {
       if (!mounted) return;
@@ -97,12 +99,11 @@ class _CategoryManagePageState extends ConsumerState<CategoryManagePage> {
   }
 
   Future<void> _importCategories() async {
-    final pick = await FilePicker.platform.pickFiles(
+    final file = await FilePicker.pickFile(
       type: FileType.custom,
       allowedExtensions: const ['csv', 'txt', 'yaml', 'yml', 'zip'],
-      withData: true,
     );
-    if (pick == null || pick.files.isEmpty || !mounted) return;
+    if (file == null || !mounted) return;
 
     final mode = await showDialog<String>(
       context: context,
@@ -135,22 +136,21 @@ class _CategoryManagePageState extends ConsumerState<CategoryManagePage> {
     );
     if (mode == null || !mounted) return;
 
-    final file = pick.files.first;
-    late final List<int> bytes;
-    if (file.bytes != null) {
-      bytes = file.bytes!;
-    } else if (file.path != null) {
-      bytes = await File(file.path!).readAsBytes();
-    } else {
-      return;
-    }
+    final bytes = await file.readAsBytes();
+    if (!mounted) return;
 
-    setState(() => _busy = true);
     try {
-      final result = await _csv.importBytes(
-        bytes,
-        fileName: file.name,
-        mode: mode,
+      final result = await showImportProgressLayer(
+        context: context,
+        title: '正在导入分类',
+        task: (report) {
+          return _csv.importBytes(
+            bytes,
+            fileName: file.name,
+            mode: mode,
+            onProgress: report,
+          );
+        },
       );
       ref.invalidate(expenseCategoriesProvider);
       ref.invalidate(incomeCategoriesProvider);
@@ -169,6 +169,75 @@ class _CategoryManagePageState extends ConsumerState<CategoryManagePage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('导入失败：$e')),
       );
+    }
+  }
+
+  Future<void> _clearUnused() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('清除未使用的分类'),
+        content: const Text('将删除当前没有任何账单的分类（主分类须其下子分类也均无账单）。确定继续？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('清除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      final n = await ref.read(categoryRepositoryProvider).clearUnused();
+      ref.invalidate(expenseCategoriesProvider);
+      ref.invalidate(incomeCategoriesProvider);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已清除 $n 个未使用分类')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _restoreDefaults() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('恢复默认分类'),
+        content: const Text('将按出厂清单补齐缺失的主分类与子分类，不会删除你自建的分类。确定继续？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('恢复'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      final r = await ref.read(categoryRepositoryProvider).restoreDefaults();
+      ref.invalidate(expenseCategoriesProvider);
+      ref.invalidate(incomeCategoriesProvider);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '已补缺 ${r.created} 项'
+            '${r.removedObsolete > 0 ? '，清理闲置旧分类 ${r.removedObsolete} 项' : ''}',
+          ),
+        ),
+      );
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -183,11 +252,7 @@ class _CategoryManagePageState extends ConsumerState<CategoryManagePage> {
     return Scaffold(
       backgroundColor: PigTokens.scaffoldBackground,
       appBar: AppBar(
-        title: const Text(
-          '记账分类管理',
-          style: TextStyle(fontSize: 18),
-        ),
-        centerTitle: true,
+        title: const Text('记账分类管理'),
         actions: [
           IconButton(
             tooltip: '导入分类',
@@ -215,7 +280,21 @@ class _CategoryManagePageState extends ConsumerState<CategoryManagePage> {
               color: IconTheme.of(context).color,
             ),
           ),
-          const SizedBox(width: 4),
+          PopupMenuButton<String>(
+            tooltip: '更多',
+            enabled: !_busy,
+            onSelected: (v) {
+              if (v == 'clear') {
+                _clearUnused();
+              } else if (v == 'restore') {
+                _restoreDefaults();
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'clear', child: Text('清除未使用的分类')),
+              PopupMenuItem(value: 'restore', child: Text('恢复默认分类')),
+            ],
+          ),
         ],
       ),
       body: expenseAsync.when(
@@ -238,24 +317,6 @@ class _CategoryManagePageState extends ConsumerState<CategoryManagePage> {
               return ListView(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
                 children: [
-                  const Text(
-                    '长按拖动分类可排序，点击分类可编辑或添加子分类',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: PigTokens.textTertiary,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    '支持导入导出分类包（zip，含自定义图标），也可导入 BeeCount 分类包',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: PigTokens.textTertiary,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
                   const Text(
                     '支出管理',
                     style: TextStyle(
@@ -351,7 +412,11 @@ class _MainCategorySectionState extends State<_MainCategorySection> {
   }
 
   Future<void> _addMain() async {
-    final result = await showCategoryEditSheet(context, title: '添加分类');
+    final result = await showCategoryEditSheet(
+      context,
+      title: '添加分类',
+      kind: widget.kind,
+    );
     if (result == null) return;
     final id = await widget.repo.create(
       name: result.name,
@@ -368,15 +433,8 @@ class _MainCategorySectionState extends State<_MainCategorySection> {
   }
 
   Future<void> _openDetail(Category main) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: PigTokens.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(
-          top: Radius.circular(PigTokens.radiusSheet),
-        ),
-      ),
+    await showWorkspaceSheet<void>(
+      context,
       builder: (ctx) => _MainCategoryDetailSheet(
         main: main,
         kind: widget.kind,
@@ -482,6 +540,7 @@ class _MainCategoryDetailSheetState extends State<_MainCategoryDetailSheet> {
     final result = await showCategoryEditSheet(
       context,
       title: '编辑分类',
+      kind: widget.kind,
       categoryId: _main.id,
       initialName: _main.name,
       initialIcon: _main.icon ?? 'category',
@@ -547,7 +606,11 @@ class _MainCategoryDetailSheetState extends State<_MainCategoryDetailSheet> {
   }
 
   Future<void> _addChild() async {
-    final result = await showCategoryEditSheet(context, title: '添加子分类');
+    final result = await showCategoryEditSheet(
+      context,
+      title: '添加子分类',
+      kind: widget.kind,
+    );
     if (result == null) return;
     final id = await widget.repo.create(
       name: result.name,
@@ -592,6 +655,7 @@ class _MainCategoryDetailSheetState extends State<_MainCategoryDetailSheet> {
         final result = await showCategoryEditSheet(
           context,
           title: '编辑子分类',
+          kind: widget.kind,
           categoryId: child.id,
           initialName: child.name,
           initialIcon: child.icon ?? 'category',
@@ -644,10 +708,7 @@ class _MainCategoryDetailSheetState extends State<_MainCategoryDetailSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final bottom = MediaQuery.viewInsetsOf(context).bottom;
-
-    return Padding(
-      padding: EdgeInsets.fromLTRB(20, 12, 20, 24 + bottom),
+    return WorkspaceSheetFrame(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -705,56 +766,73 @@ class _MainCategoryDetailSheetState extends State<_MainCategoryDetailSheet> {
             style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 12),
-          if (_children.isEmpty) ...[
-            const Text(
-              '暂无子分类，点击下方按钮添加',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 13, color: PigTokens.textTertiary),
-            ),
-            const SizedBox(height: 16),
-            Center(
-              child: OutlinedButton.icon(
-                onPressed: _addChild,
-                icon: const Icon(Icons.add, size: 18),
-                label: const Text('添加'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: PigTokens.primary,
-                  side: const BorderSide(color: PigTokens.primary),
-                  shape: const StadiumBorder(),
-                ),
-              ),
-            ),
-          ] else
-            Wrap(
-              spacing: 8,
-              runSpacing: 12,
-              children: [
-                for (final c in _children)
-                  Builder(
-                    builder: (ctx) {
-                      return SizedBox(
-                        width: 68,
-                        child: _CategoryTile(
-                          category: c,
-                          onTap: () {
-                            final box = ctx.findRenderObject() as RenderBox?;
-                            final pos = box?.localToGlobal(Offset.zero) ??
-                                Offset.zero;
-                            _onChildTap(
-                              c,
-                              Offset(pos.dx, pos.dy + (box?.size.height ?? 0)),
-                            );
-                          },
+          Flexible(
+            child: WorkspaceSheetScroll(
+              child: _children.isEmpty
+                  ? Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text(
+                          '暂无子分类，点击下方按钮添加',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: PigTokens.textTertiary,
+                          ),
                         ),
-                      );
-                    },
-                  ),
-                SizedBox(
-                  width: 68,
-                  child: _AddTile(onTap: _addChild),
-                ),
-              ],
+                        const SizedBox(height: 16),
+                        Center(
+                          child: OutlinedButton.icon(
+                            onPressed: _addChild,
+                            icon: const Icon(Icons.add, size: 18),
+                            label: const Text('添加'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: PigTokens.primary,
+                              side: const BorderSide(color: PigTokens.primary),
+                              shape: const StadiumBorder(),
+                            ),
+                          ),
+                        ),
+                      ],
+                    )
+                  : Wrap(
+                      spacing: 8,
+                      runSpacing: 12,
+                      children: [
+                        for (final c in _children)
+                          Builder(
+                            builder: (ctx) {
+                              return SizedBox(
+                                width: 68,
+                                child: _CategoryTile(
+                                  category: c,
+                                  onTap: () {
+                                    final box =
+                                        ctx.findRenderObject() as RenderBox?;
+                                    final pos = box?.localToGlobal(
+                                          Offset.zero,
+                                        ) ??
+                                        Offset.zero;
+                                    _onChildTap(
+                                      c,
+                                      Offset(
+                                        pos.dx,
+                                        pos.dy + (box?.size.height ?? 0),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              );
+                            },
+                          ),
+                        SizedBox(
+                          width: 68,
+                          child: _AddTile(onTap: _addChild),
+                        ),
+                      ],
+                    ),
             ),
+          ),
           const SizedBox(height: 8),
         ],
       ),
@@ -948,23 +1026,20 @@ Future<void> _finalizeCustomIcon({
 Future<_EditResult?> showCategoryEditSheet(
   BuildContext context, {
   required String title,
+  required String kind,
   int? categoryId,
   String initialName = '',
   String initialIcon = 'category',
   String initialIconType = 'material',
   String? initialCustomIconPath,
 }) {
-  return showModalBottomSheet<_EditResult>(
-    context: context,
-    isScrollControlled: true,
-    backgroundColor: PigTokens.surface,
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(
-        top: Radius.circular(PigTokens.radiusSheet),
-      ),
-    ),
+  return showWorkspaceSheet<_EditResult>(
+    context,
+    fixedHeight: true,
+    heightFraction: PigTokens.categoryEditSheetFraction,
     builder: (ctx) => _CategoryEditSheet(
       title: title,
+      kind: kind,
       categoryId: categoryId,
       initialName: initialName,
       initialIcon: initialIcon,
@@ -974,9 +1049,10 @@ Future<_EditResult?> showCategoryEditSheet(
   );
 }
 
-class _CategoryEditSheet extends StatefulWidget {
+class _CategoryEditSheet extends ConsumerStatefulWidget {
   const _CategoryEditSheet({
     required this.title,
+    required this.kind,
     this.categoryId,
     required this.initialName,
     required this.initialIcon,
@@ -985,6 +1061,7 @@ class _CategoryEditSheet extends StatefulWidget {
   });
 
   final String title;
+  final String kind;
   final int? categoryId;
   final String initialName;
   final String initialIcon;
@@ -992,16 +1069,17 @@ class _CategoryEditSheet extends StatefulWidget {
   final String? initialCustomIconPath;
 
   @override
-  State<_CategoryEditSheet> createState() => _CategoryEditSheetState();
+  ConsumerState<_CategoryEditSheet> createState() => _CategoryEditSheetState();
 }
 
-class _CategoryEditSheetState extends State<_CategoryEditSheet> {
+class _CategoryEditSheetState extends ConsumerState<_CategoryEditSheet> {
   late final TextEditingController _name;
   late String _icon;
   late String _iconType;
   String? _customIconPath;
   File? _pendingCustomFile;
   bool _picking = false;
+  bool _taken = false;
 
   @override
   void initState() {
@@ -1016,6 +1094,30 @@ class _CategoryEditSheetState extends State<_CategoryEditSheet> {
   void dispose() {
     _name.dispose();
     super.dispose();
+  }
+
+  Future<void> _recheck(String raw) async {
+    final taken = await ref.read(categoryRepositoryProvider).nameTaken(
+          widget.kind,
+          raw,
+          excludeId: widget.categoryId,
+        );
+    if (mounted) setState(() => _taken = taken);
+  }
+
+  void _submit() {
+    final name = _name.text.trim();
+    if (name.isEmpty || _taken) return;
+    Navigator.pop(
+      context,
+      _EditResult(
+        name: name,
+        icon: _icon,
+        iconType: _iconType,
+        customIconPath: _customIconPath,
+        pendingCustomFile: _pendingCustomFile,
+      ),
+    );
   }
 
   Future<void> _pickCustom() async {
@@ -1075,18 +1177,13 @@ class _CategoryEditSheetState extends State<_CategoryEditSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final bottom = MediaQuery.viewInsetsOf(context).bottom;
-    final maxHeight = MediaQuery.sizeOf(context).height - bottom - 48;
     final customSelected = _iconType == 'custom';
 
-    return Padding(
-      padding: EdgeInsets.fromLTRB(20, 12, 20, 20 + bottom),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxHeight: maxHeight),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
+    return WorkspaceSheetFrame(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
             Center(
               child: Container(
                 width: 36,
@@ -1122,11 +1219,22 @@ class _CategoryEditSheetState extends State<_CategoryEditSheet> {
                         ),
                       ),
                     ),
-                    onChanged: (_) => setState(() {}),
+                    onChanged: (v) {
+                      setState(() {});
+                      _recheck(v);
+                    },
+                    onSubmitted: (_) => _submit(),
                   ),
                 ),
               ],
             ),
+            if (_taken) ...[
+              const SizedBox(height: 8),
+              const Text(
+                '已存在同名分类',
+                style: TextStyle(color: PigTokens.danger, fontSize: 13),
+              ),
+            ],
             const SizedBox(height: 16),
             const Text(
               '选择图标',
@@ -1200,7 +1308,7 @@ class _CategoryEditSheetState extends State<_CategoryEditSheet> {
                   }
                   final key = categoryIconKeys[i - 1];
                   final selected = !customSelected && key == _icon;
-                  final c = categoryIconColor(key, icon: key);
+                  final c = categoryIconColor(key);
                   return InkWell(
                     onTap: () => setState(() {
                       _icon = key;
@@ -1226,25 +1334,11 @@ class _CategoryEditSheetState extends State<_CategoryEditSheet> {
             ),
             const SizedBox(height: 16),
             FilledButton(
-              onPressed: () {
-                final name = _name.text.trim();
-                if (name.isEmpty) return;
-                Navigator.pop(
-                  context,
-                  _EditResult(
-                    name: name,
-                    icon: _icon,
-                    iconType: _iconType,
-                    customIconPath: _customIconPath,
-                    pendingCustomFile: _pendingCustomFile,
-                  ),
-                );
-              },
+              onPressed: _taken || _name.text.trim().isEmpty ? null : _submit,
               child: const Text('保存'),
             ),
           ],
         ),
-      ),
     );
   }
 }

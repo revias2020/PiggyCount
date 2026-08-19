@@ -1,7 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../ai/ai_config.dart';
-import '../ai/ai_config_store.dart';
+import '../ai/ai_provider_config.dart';
+import '../ai/ai_provider_store.dart';
 import '../ai/extraction_engine.dart';
 import '../services/ai/ai_bookkeeper.dart';
 import '../services/ai/ai_chat_service.dart';
@@ -9,13 +9,33 @@ import '../services/ai/bill_creation_service.dart';
 import '../services/ai/speech_asr_service.dart';
 import 'database_provider.dart';
 
-final aiConfigStoreProvider = Provider((ref) => AiConfigStore());
+final aiProviderStoreProvider = Provider((ref) => AiProviderStore());
 
-final aiConfigProvider = FutureProvider<AiConfig>((ref) {
-  return ref.watch(aiConfigStoreProvider).load();
+final aiProvidersListProvider =
+    FutureProvider<List<AiServiceProvider>>((ref) {
+  return ref.watch(aiProviderStoreProvider).loadProviders();
 });
 
-final extractionEngineProvider = Provider((ref) => AiExtractionEngine());
+final aiCapabilityBindingProvider =
+    FutureProvider<AiCapabilityBinding>((ref) {
+  return ref.watch(aiProviderStoreProvider).loadBinding();
+});
+
+/// 「我的 · AI 设置」副标题。
+final aiMineSubtitleProvider = FutureProvider<String>((ref) {
+  ref.watch(aiProvidersListProvider);
+  return ref.watch(aiProviderStoreProvider).mineSubtitle();
+});
+
+final textCapabilityReadyProvider = FutureProvider<bool>((ref) {
+  return ref.watch(aiProviderStoreProvider).isTextReady();
+});
+
+final extractionEngineProvider = Provider((ref) {
+  return AiExtractionEngine(
+    providerStore: ref.watch(aiProviderStoreProvider),
+  );
+});
 
 final billCreationServiceProvider = Provider(
   (ref) => BillCreationService(

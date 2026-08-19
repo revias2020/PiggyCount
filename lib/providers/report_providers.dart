@@ -1,3 +1,4 @@
+import 'package:drift/drift.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/repositories/statistics_repository.dart';
@@ -79,13 +80,21 @@ void _onBillChanged(Ref ref) {
   }
 }
 
-/// 绑定账单变更与 Tab 切换；须在主壳 `watch`，否则无人订阅。
+/// 绑定账单/标签变更与 Tab 切换；须在主壳 `watch`，否则无人订阅。
+/// 标签表变更亦标脏，使对比卡 Top10 等排行 chip 跟 **标签展示新鲜度**（ADR-035）。
 final reportRefreshBinderProvider = Provider<void>((ref) {
-  final sub =
+  final db = ref.watch(databaseProvider);
+  final txSub =
       ref.watch(transactionRepositoryProvider).onChanged.listen((_) {
     _onBillChanged(ref);
   });
-  ref.onDispose(sub.cancel);
+  final tagsSub = db
+      .tableUpdates(TableUpdateQuery.onTable(db.tags))
+      .listen((_) => _onBillChanged(ref));
+  ref.onDispose(() {
+    txSub.cancel();
+    tagsSub.cancel();
+  });
 
   ref.listen<int>(tabIndexProvider, (prev, next) {
     if (next == 1) _reloadReportIfDirty(ref);

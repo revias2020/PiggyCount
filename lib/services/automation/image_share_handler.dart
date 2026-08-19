@@ -1,27 +1,23 @@
-import 'dart:io';
-
-import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../pages/transaction/image_billing_sheet.dart';
 import 'auto_billing_service.dart';
 
 /// 系统分享图片入账：冷/热启动均由原生写入临时文件后经 MethodChannel 通知。
+///
+/// 始终走后台智能记账（通知 + 自动落库），不打开确认弹层（ADR-018）。
 class ImageShareHandler {
   ImageShareHandler({
     required this.autoBilling,
-    required this.navigatorKey,
   });
 
   static const _channel = MethodChannel('com.xiaozhu.piggy_count/share');
 
   final AutoBillingService autoBilling;
-  final GlobalKey<NavigatorState> navigatorKey;
 
   bool _bound = false;
 
   Future<void> bind() async {
-    if (!Platform.isAndroid || _bound) return;
+    if (_bound) return;
     _bound = true;
 
     _channel.setMethodCallHandler((call) async {
@@ -42,22 +38,6 @@ class ImageShareHandler {
   }
 
   Future<void> _handle(String path) async {
-    final ctx = navigatorKey.currentContext;
-    if (ctx != null && ctx.mounted) {
-      // 前台：走确认弹层，降低误记
-      final bytes = await File(path).readAsBytes();
-      final mime =
-          path.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
-      if (!ctx.mounted) return;
-      await showImageBillingSheet(
-        ctx,
-        imageBytes: bytes,
-        mimeType: mime,
-        source: 'share',
-      );
-      return;
-    }
-    // 无 UI：后台自动落库 + 通知
     await autoBilling.processImagePath(
       path,
       source: 'share',

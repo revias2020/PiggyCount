@@ -1,8 +1,9 @@
 import 'package:drift/drift.dart';
 import 'package:uuid/uuid.dart';
 
-import '../../services/custom_icon_service.dart';
+import '../../utils/happened_at.dart';
 import '../app_database.dart';
+import '../default_catalog_applier.dart';
 
 /// 删除分类的结果（含账单拦截信息）。
 sealed class CategoryDeleteResult {
@@ -50,6 +51,7 @@ class CategoryRepository {
   Stream<List<Category>> watchByKind(String kind) {
     return (_db.select(_db.categories)
           ..where((t) => t.kind.equals(kind))
+          ..where((t) => t.deletedAt.isNull())
           ..orderBy([
             (t) => OrderingTerm.asc(t.sortOrder),
             (t) => OrderingTerm.asc(t.id),
@@ -60,6 +62,7 @@ class CategoryRepository {
   Future<List<Category>> listByKind(String kind) {
     return (_db.select(_db.categories)
           ..where((t) => t.kind.equals(kind))
+          ..where((t) => t.deletedAt.isNull())
           ..orderBy([
             (t) => OrderingTerm.asc(t.sortOrder),
             (t) => OrderingTerm.asc(t.id),
@@ -69,6 +72,7 @@ class CategoryRepository {
 
   Future<List<Category>> listAll() {
     return (_db.select(_db.categories)
+          ..where((t) => t.deletedAt.isNull())
           ..orderBy([
             (t) => OrderingTerm.asc(t.kind),
             (t) => OrderingTerm.asc(t.sortOrder),
@@ -78,13 +82,16 @@ class CategoryRepository {
   }
 
   Future<Category?> getById(int id) {
-    return (_db.select(_db.categories)..where((t) => t.id.equals(id)))
+    return (_db.select(_db.categories)
+          ..where((t) => t.id.equals(id))
+          ..where((t) => t.deletedAt.isNull()))
         .getSingleOrNull();
   }
 
   Future<List<Category>> childrenOf(int parentId) {
     return (_db.select(_db.categories)
           ..where((t) => t.parentId.equals(parentId))
+          ..where((t) => t.deletedAt.isNull())
           ..orderBy([
             (t) => OrderingTerm.asc(t.sortOrder),
             (t) => OrderingTerm.asc(t.id),
@@ -94,9 +101,27 @@ class CategoryRepository {
 
   Future<int> countTransactions(int categoryId) async {
     final rows = await (_db.select(_db.transactions)
-          ..where((t) => t.categoryId.equals(categoryId)))
+          ..where((t) => t.categoryId.equals(categoryId))
+          ..where((t) => t.deletedAt.isNull()))
         .get();
     return rows.length;
+  }
+
+  /// 同一收支类型内是否已有同名（主+子一起算）。
+  Future<bool> nameTaken(
+    String kind,
+    String name, {
+    int? excludeId,
+  }) async {
+    final trimmed = name.trim();
+    final q = _db.select(_db.categories)
+      ..where((t) => t.kind.equals(kind))
+      ..where((t) => t.name.equals(trimmed))
+      ..where((t) => t.deletedAt.isNull());
+    if (excludeId != null) {
+      q.where((t) => t.id.isNotValue(excludeId));
+    }
+    return (await q.get()).isNotEmpty;
   }
 
   Future<int> create({
@@ -108,6 +133,13 @@ class CategoryRepository {
     String iconType = 'material',
     String? customIconPath,
   }) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      throw ArgumentError('分类名称不能为空');
+    }
+    if (await nameTaken(kind, trimmed)) {
+      throw StateError('已存在同名分类');
+    }
     if (parentId != null) {
       final parent = await getById(parentId);
       if (parent == null || parent.parentId != null) {
@@ -116,15 +148,17 @@ class CategoryRepository {
     }
     final siblings = await (_db.select(_db.categories)
           ..where((t) => t.kind.equals(kind))
+          ..where((t) => t.deletedAt.isNull())
           ..where(
             (t) => parentId == null
                 ? t.parentId.isNull()
                 : t.parentId.equals(parentId),
           ))
         .get();
+    final now = HappenedAt.now();
     return _db.into(_db.categories).insert(
           CategoriesCompanion.insert(
-            name: name.trim(),
+            name: trimmed,
             kind: kind,
             syncId: _uuid.v4(),
             parentId: Value(parentId),
@@ -132,27 +166,25 @@ class CategoryRepository {
             iconType: Value(iconType),
             customIconPath: Value(customIconPath),
             sortOrder: Value(sortOrder ?? siblings.length),
+            updatedAt: Value(now),
           ),
         );
   }
 
-  /// 按 id 批量删除（不校验账单；调用方需自行筛选未使用分类）。
+  /// 按 id 批量软删（不校验账单；调用方需自行筛选未使用分类）。
   Future<void> deleteByIds(List<int> ids) async {
     if (ids.isEmpty) return;
-    final paths = <String>[];
-    for (final id in ids) {
-      final cat = await getById(id);
-      if (cat?.customIconPath != null) paths.add(cat!.customIconPath!);
-    }
+    final now = HappenedAt.now();
     await _db.transaction(() async {
       for (final id in ids) {
-        await (_db.delete(_db.categories)..where((t) => t.id.equals(id))).go();
+        await (_db.update(_db.categories)..where((t) => t.id.equals(id))).write(
+              CategoriesCompanion(
+                deletedAt: Value(now),
+                updatedAt: Value(now),
+              ),
+            );
       }
     });
-    final icons = CustomIconService();
-    for (final path in paths) {
-      await icons.deleteCustomIcon(path);
-    }
   }
 
   /// 删除无账单分类。主分类会把子分类账单计入占用；返回删除条数。
@@ -172,9 +204,24 @@ class CategoryRepository {
     return unused.length;
   }
 
+  /// 合并补缺默认分类树（ADR-039：不再按名清理「生活日用」）。
+  Future<({int created, int removedObsolete})> restoreDefaults() {
+    return DefaultCatalogApplier(_db).ensureCategories();
+  }
+
   Future<void> rename(int id, String name) async {
+    final cat = await getById(id);
+    if (cat == null) return;
+    final trimmed = name.trim();
+    if (await nameTaken(cat.kind, trimmed, excludeId: id)) {
+      throw StateError('已存在同名分类');
+    }
+    final now = HappenedAt.now();
     await (_db.update(_db.categories)..where((t) => t.id.equals(id))).write(
-          CategoriesCompanion(name: Value(name.trim())),
+          CategoriesCompanion(
+            name: Value(trimmed),
+            updatedAt: Value(now),
+          ),
         );
   }
 
@@ -185,12 +232,20 @@ class CategoryRepository {
     String iconType = 'material',
     String? customIconPath,
   }) async {
+    final cat = await getById(id);
+    if (cat == null) return;
+    final trimmed = name.trim();
+    if (await nameTaken(cat.kind, trimmed, excludeId: id)) {
+      throw StateError('已存在同名分类');
+    }
+    final now = HappenedAt.now();
     await (_db.update(_db.categories)..where((t) => t.id.equals(id))).write(
           CategoriesCompanion(
-            name: Value(name.trim()),
+            name: Value(trimmed),
             icon: Value(icon),
             iconType: Value(iconType),
             customIconPath: Value(customIconPath),
+            updatedAt: Value(now),
           ),
         );
   }
@@ -201,22 +256,30 @@ class CategoryRepository {
     String? icon,
     String? customIconPath,
   }) async {
+    final now = HappenedAt.now();
     await (_db.update(_db.categories)..where((t) => t.id.equals(id))).write(
           CategoriesCompanion(
             iconType: Value(iconType),
             icon: icon != null ? Value(icon) : const Value.absent(),
             customIconPath: Value(customIconPath),
+            updatedAt: Value(now),
           ),
         );
   }
 
   /// 重排同级分类：[orderedIds] 为同一 parent 下（或主分类列表）的 id 顺序。
   Future<void> reorder(List<int> orderedIds) async {
+    final now = HappenedAt.now();
     await _db.transaction(() async {
       for (var i = 0; i < orderedIds.length; i++) {
         await (_db.update(_db.categories)
               ..where((t) => t.id.equals(orderedIds[i])))
-            .write(CategoriesCompanion(sortOrder: Value(i)));
+            .write(
+          CategoriesCompanion(
+            sortOrder: Value(i),
+            updatedAt: Value(now),
+          ),
+        );
       }
     });
   }
@@ -248,10 +311,12 @@ class CategoryRepository {
       }
     }
     final siblings = await childrenOf(newParentId);
+    final now = HappenedAt.now();
     await (_db.update(_db.categories)..where((t) => t.id.equals(id))).write(
           CategoriesCompanion(
             parentId: Value(newParentId),
             sortOrder: Value(siblings.length),
+            updatedAt: Value(now),
           ),
         );
   }
@@ -262,12 +327,15 @@ class CategoryRepository {
     if (cat == null || cat.parentId == null) return;
     final mains = await (_db.select(_db.categories)
           ..where((t) => t.kind.equals(cat.kind))
-          ..where((t) => t.parentId.isNull()))
+          ..where((t) => t.parentId.isNull())
+          ..where((t) => t.deletedAt.isNull()))
         .get();
+    final now = HappenedAt.now();
     await (_db.update(_db.categories)..where((t) => t.id.equals(id))).write(
           CategoriesCompanion(
             parentId: const Value(null),
             sortOrder: Value(mains.length),
+            updatedAt: Value(now),
           ),
         );
   }

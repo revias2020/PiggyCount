@@ -50,5 +50,34 @@ app.*.map.json
 **/*.keystore
 _flutter_*.txt
 
+# Secrets & local credentials (never commit)
+.env
+.env.*
+*.pem
+**/google-services.json
+**/GoogleService-Info.plist
+key.properties
+**/key.properties
+
+# Editor / agent local
+.cursor/
+
+# Backups
+*.bak
+*.bak_*
+*.bak.*
+pubspec.yaml.bak_test
+
 # Third-party reference trees (not part of this app; different licenses)
 /references/
+
+# Local Python / tooling
+venv/
+.venv/
+
+# Prevent re-adding retired domain drafts (truth lives in docs/framework.md + development.md)
+CONTEXT.md
+docs/adr/
+docs/assets/
+docs/glossary.md
+docs/_archive/

@@ -4,12 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-import '../../ai/ai_config.dart';
 import '../../providers/ai_providers.dart';
 import '../../providers/automation_providers.dart';
 import '../../providers/database_provider.dart';
-import '../../services/sync/cloud_sync_actions.dart';
-import '../../services/sync/cloud_sync_config.dart';
 import '../../services/sync/cloud_sync_providers.dart';
 import '../../styles/tokens.dart';
 import '../ai/ai_settings_page.dart';
@@ -18,11 +15,13 @@ import '../settings/about_page.dart';
 import '../settings/cloud_sync_page.dart' show CloudSyncPage;
 import '../settings/data_manage_page.dart';
 import '../settings/ios_screenshot_guide_page.dart';
+import '../settings/sync_page.dart';
+import '../settings/widget_management_page.dart';
 import '../tag/tag_manage_page.dart';
 
 /// 「我的」设置入口页。
 ///
-/// 账本管理不在此页（见开发文档 §4.1.1）。
+/// 账本管理不在此页（仅顶栏账本列表；见 docs/framework.md）。
 class MinePage extends ConsumerWidget {
   const MinePage({super.key});
 
@@ -33,14 +32,9 @@ class MinePage extends ConsumerWidget {
         ref.watch(screenshotAutoBillingProvider).valueOrNull ?? false;
     final aiAssistant =
         ref.watch(aiAssistantEnabledProvider).valueOrNull ?? true;
-    final aiCfg = ref.watch(aiConfigProvider).valueOrNull;
+    final aiSubtitle =
+        ref.watch(aiMineSubtitleProvider).valueOrNull ?? '服务商与能力绑定';
     final cloudCfg = ref.watch(cloudSyncConfigProvider).valueOrNull;
-    final aiSubtitle = () {
-      if (aiCfg == null) return '默认智谱，支持 OpenAI 兼容';
-      final name =
-          aiCfg.kind == AiProviderKind.zhipu ? '智谱' : 'OpenAI 兼容';
-      return aiCfg.isConfigured ? '$name · 已配置' : '$name · 未配置 Key';
-    }();
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(
@@ -54,14 +48,16 @@ class MinePage extends ConsumerWidget {
           children: [
             _MineTile(
               icon: Icons.psychology_outlined,
-              title: 'AI 模型配置',
+              title: 'AI 设置',
               subtitle: aiSubtitle,
-              onTap: () {
-                Navigator.of(context).push(
+              onTap: () async {
+                await Navigator.of(context).push(
                   MaterialPageRoute<void>(
                     builder: (_) => const AiSettingsPage(),
                   ),
                 );
+                ref.invalidate(aiMineSubtitleProvider);
+                ref.invalidate(aiProvidersListProvider);
               },
             ),
           ],
@@ -81,10 +77,22 @@ class MinePage extends ConsumerWidget {
                 );
               },
             ),
-            if (cloudCfg != null && cloudCfg.isReadyForSync) ...[
-              const _SectionDivider(),
-              const _CloudQuickSyncStrip(),
-            ],
+            const _SectionDivider(),
+            _MineTile(
+              icon: Icons.sync_outlined,
+              title: '同步',
+              subtitle: (cloudCfg?.isReadyForSync ?? false)
+                  ? null
+                  : '云服务不可用，请确认配置信息',
+              enabled: cloudCfg?.isReadyForSync ?? false,
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const SyncPage(),
+                  ),
+                );
+              },
+            ),
             const _SectionDivider(),
             _MineTile(
               icon: Icons.import_export,
@@ -135,9 +143,6 @@ class MinePage extends ConsumerWidget {
             SwitchListTile(
               secondary: const _MineIcon(Icons.smart_toy_outlined),
               title: const Text('AI 智能助手'),
-              subtitle: Text(
-                aiAssistant ? '报表页显示 AI 入口' : '已关闭：报表页隐藏 AI 入口',
-              ),
               activeThumbColor: PigTokens.primary,
               value: aiAssistant,
               onChanged: (v) {
@@ -148,15 +153,6 @@ class MinePage extends ConsumerWidget {
             SwitchListTile(
               secondary: const _MineIcon(Icons.screenshot_monitor_outlined),
               title: const Text('截图自动记账'),
-              subtitle: Text(
-                screenshot
-                    ? (Platform.isIOS
-                        ? '已开启：请配合快捷指令自动识别入账'
-                        : '已开启：监听系统截图并自动识别入账')
-                    : (Platform.isIOS
-                        ? '开启后查看快捷指令引导'
-                        : '开启后监听相册截图（需媒体与通知权限）'),
-              ),
               activeThumbColor: PigTokens.primary,
               value: screenshot,
               onChanged: (v) async {
@@ -217,7 +213,6 @@ class MinePage extends ConsumerWidget {
             SwitchListTile(
               secondary: const _MineIcon(Icons.new_label_outlined),
               title: const Text('自动生成标签'),
-              subtitle: const Text('智能记账时允许创建新标签'),
               activeThumbColor: PigTokens.primary,
               value: autoTags,
               onChanged: (v) {
@@ -229,6 +224,19 @@ class MinePage extends ConsumerWidget {
         const SizedBox(height: PigTokens.spaceMd),
         _SectionCard(
           children: [
+            _MineTile(
+              icon: Icons.widgets_outlined,
+              title: '桌面小组件',
+              subtitle: '收支速览预览与添加说明',
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const WidgetManagementPage(),
+                  ),
+                );
+              },
+            ),
+            const _SectionDivider(),
             _MineTile(
               icon: Icons.info_outline,
               title: '关于小猪记账',
@@ -244,97 +252,6 @@ class MinePage extends ConsumerWidget {
           ],
         ),
       ],
-    );
-  }
-}
-
-/// 已测通时的快捷上传 / 下载。
-class _CloudQuickSyncStrip extends ConsumerStatefulWidget {
-  const _CloudQuickSyncStrip();
-
-  @override
-  ConsumerState<_CloudQuickSyncStrip> createState() =>
-      _CloudQuickSyncStripState();
-}
-
-class _CloudQuickSyncStripState extends ConsumerState<_CloudQuickSyncStrip> {
-  bool _busy = false;
-
-  Future<void> _upload(CloudSyncConfig cfg) async {
-    setState(() => _busy = true);
-    try {
-      final url = await uploadCloudLedgerSnapshot(ref: ref, config: cfg);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('上传成功：$url')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('上传失败：$e')),
-      );
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _download(CloudSyncConfig cfg) async {
-    if (!await confirmCloudDownload(context)) return;
-    setState(() => _busy = true);
-    try {
-      final n = await downloadAndImportCloudSnapshot(ref: ref, config: cfg);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已从云端导入 $n 笔')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('下载失败：$e')),
-      );
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final cfg = ref.watch(cloudSyncConfigProvider).valueOrNull;
-    if (cfg == null || !cfg.isReadyForSync) return const SizedBox.shrink();
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        PigTokens.spaceLg,
-        PigTokens.spaceSm,
-        PigTokens.spaceLg,
-        PigTokens.spaceMd,
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: OutlinedButton(
-              onPressed: _busy ? null : () => _download(cfg),
-              child: const Text('下载并导入'),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: FilledButton(
-              onPressed: _busy ? null : () => _upload(cfg),
-              child: _busy
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
-                  : const Text('上传当前账本'),
-            ),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -393,16 +310,19 @@ class _MineTile extends StatelessWidget {
     required this.title,
     required this.onTap,
     this.subtitle,
+    this.enabled = true,
   });
 
   final IconData icon;
   final String title;
   final String? subtitle;
   final VoidCallback? onTap;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
     return ListTile(
+      enabled: enabled,
       contentPadding: const EdgeInsets.symmetric(
         horizontal: PigTokens.spaceLg,
         vertical: PigTokens.spaceXs,
@@ -421,10 +341,8 @@ class _MineTile extends StatelessWidget {
                 color: PigTokens.textTertiary,
               ),
             ),
-      trailing: onTap == null
-          ? null
-          : const Icon(Icons.chevron_right, color: PigTokens.textTertiary),
-      onTap: onTap,
+      trailing: const Icon(Icons.chevron_right, color: PigTokens.textTertiary),
+      onTap: enabled ? onTap : null,
     );
   }
 }

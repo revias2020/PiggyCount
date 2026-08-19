@@ -7,7 +7,7 @@ import '../../data/repositories/transaction_repository.dart';
 import '../../providers/database_provider.dart';
 import '../../providers/transaction_providers.dart';
 import '../../styles/tokens.dart';
-import '../../utils/category_icons.dart';
+import '../../widgets/category_icon_view.dart';
 import '../../widgets/empty_state.dart';
 import '../../widgets/page_status.dart';
 import '../../widgets/transaction/transaction_row_tile.dart';
@@ -344,7 +344,14 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                 const ListTile(title: Text('选择分类')),
                 for (final p in parents) ...[
                   ListTile(
-                    leading: Icon(categoryIconData(p.icon)),
+                    leading: CategoryIconCircle(
+                      name: p.name,
+                      icon: p.icon,
+                      iconType: p.iconType,
+                      customIconPath: p.customIconPath,
+                      diameter: 36,
+                      iconSize: 18,
+                    ),
                     title: Text(p.name),
                     subtitle: Text(p.kind == 'expense' ? '支出' : '收入'),
                     onTap: () => Navigator.pop(ctx, p),
@@ -355,7 +362,14 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                   ])
                     ListTile(
                       contentPadding: const EdgeInsets.only(left: 48, right: 16),
-                      leading: Icon(categoryIconData(child.icon), size: 20),
+                      leading: CategoryIconCircle(
+                        name: child.name,
+                        icon: child.icon,
+                        iconType: child.iconType,
+                        customIconPath: child.customIconPath,
+                        diameter: 32,
+                        iconSize: 16,
+                      ),
                       title: Text(child.name),
                       onTap: () => Navigator.pop(ctx, child),
                     ),
@@ -445,13 +459,28 @@ class _SearchPageState extends ConsumerState<SearchPage> {
             const ListTile(title: Text('改为分类')),
             for (final p in parents) ...[
               ListTile(
-                leading: Icon(categoryIconData(p.icon)),
+                leading: CategoryIconCircle(
+                  name: p.name,
+                  icon: p.icon,
+                  iconType: p.iconType,
+                  customIconPath: p.customIconPath,
+                  diameter: 36,
+                  iconSize: 18,
+                ),
                 title: Text(p.name),
                 onTap: () => Navigator.pop(ctx, p),
               ),
               for (final child in cats.where((c) => c.parentId == p.id))
                 ListTile(
                   contentPadding: const EdgeInsets.only(left: 48, right: 16),
+                  leading: CategoryIconCircle(
+                    name: child.name,
+                    icon: child.icon,
+                    iconType: child.iconType,
+                    customIconPath: child.customIconPath,
+                    diameter: 32,
+                    iconSize: 16,
+                  ),
                   title: Text(child.name),
                   onTap: () => Navigator.pop(ctx, child),
                 ),

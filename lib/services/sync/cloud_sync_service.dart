@@ -2,56 +2,33 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-import '../../data/repositories/ledger_repository.dart';
-import '../csv/csv_service.dart';
 import 'cloud_sync_config.dart';
 
-/// MVP 云同步：整账本 CSV 快照上传/下载（冲突时由用户选择保留本地或使用云端）。
-///
-/// WebDAV 使用 Basic Auth + PUT/GET；S3 走预签名复杂度高，MVP 用
-/// 兼容「S3 风格 HTTP PUT」或提示用户优先 WebDAV。
+/// 远端工作区文件尚未被别人改掉时的条件写失败（需重新拉云再合并）。
+class CloudPreconditionFailed implements Exception {
+  @override
+  String toString() => '云端已被更新，正在重试合并';
+}
+
+/// 远端工作区文档（404 时 [body] 为空）。
+class CloudRemoteDocument {
+  const CloudRemoteDocument({this.body, this.etag});
+
+  final String? body;
+  final String? etag;
+
+  bool get isMissing => body == null;
+}
+
+/// 云存储：同步工作区 JSON 的 GET/条件 PUT；连接测试仍走 OPTIONS / HEAD。
 class CloudSyncService {
-  CloudSyncService({
-    required this.csv,
-    required this.ledgers,
-    http.Client? client,
-  }) : _http = client ?? http.Client();
+  CloudSyncService({http.Client? client}) : _http = client ?? http.Client();
 
-  final CsvService csv;
-  final LedgerRepository ledgers;
   final http.Client _http;
-
-  /// 上传当前（或全部）账本 CSV 快照。
-  Future<String> uploadSnapshot({
-    required CloudSyncConfig config,
-    int? ledgerId,
-  }) async {
-    if (config.kind == CloudSyncKind.none) {
-      throw StateError('云同步未开启');
-    }
-    final body = await csv.exportCsv(ledgerId: ledgerId);
-    final bytes = utf8.encode(body);
-    if (config.kind == CloudSyncKind.webdav) {
-      return _webdavPut(config, bytes);
-    }
-    return _s3Put(config, bytes);
-  }
-
-  /// 下载云端快照原文（CSV）。
-  Future<String> downloadSnapshot({
-    required CloudSyncConfig config,
-  }) async {
-    if (config.kind == CloudSyncKind.none) {
-      throw StateError('云同步未开启');
-    }
-    if (config.kind == CloudSyncKind.webdav) {
-      return _webdavGet(config);
-    }
-    return _s3Get(config);
-  }
+  static const remoteFile = 'piggy_workspace.json';
 
   /// 连接测试：WebDAV `OPTIONS`；S3 对对象 URL `HEAD`（必要时回退 `GET`）。
-  /// 不读写快照正文；对象尚未存在（404）仍视为连通成功。
+  /// 不读写工作区正文；对象尚未存在（404）仍视为连通成功。
   Future<void> testConnection(CloudSyncConfig config) async {
     if (config.kind == CloudSyncKind.none) {
       throw StateError('请先选择 WebDAV 或 S3');
@@ -61,6 +38,33 @@ class CloudSyncService {
       return;
     }
     await _testS3(config);
+  }
+
+  Future<CloudRemoteDocument> downloadWorkspace(CloudSyncConfig config) async {
+    if (config.kind == CloudSyncKind.none) {
+      throw StateError('云同步未开启');
+    }
+    if (config.kind == CloudSyncKind.webdav) {
+      return _get(config, webdav: true);
+    }
+    return _get(config, webdav: false);
+  }
+
+  /// [ifMatch] 为上次 GET 的 ETag；空表示远端还没有这份文件。
+  Future<void> uploadWorkspace({
+    required CloudSyncConfig config,
+    required String body,
+    String? ifMatch,
+  }) async {
+    if (config.kind == CloudSyncKind.none) {
+      throw StateError('云同步未开启');
+    }
+    final bytes = utf8.encode(body);
+    if (config.kind == CloudSyncKind.webdav) {
+      await _put(config, bytes, ifMatch: ifMatch, webdav: true);
+      return;
+    }
+    await _put(config, bytes, ifMatch: ifMatch, webdav: false);
   }
 
   Future<void> _testWebdav(CloudSyncConfig c) async {
@@ -99,7 +103,7 @@ class CloudSyncService {
     if (c.s3Bucket.trim().isEmpty) {
       throw StateError('请填写 Bucket');
     }
-    final url = _s3ObjectUrl(c);
+    final url = _objectUrl(c, webdav: false);
     final headers = <String, String>{
       if (c.s3AccessKey.isNotEmpty) 'Authorization': 'Bearer ${c.s3AccessKey}',
     };
@@ -109,7 +113,6 @@ class CloudSyncService {
       resp = await _http
           .head(Uri.parse(url), headers: headers)
           .timeout(const Duration(seconds: 15));
-      // 部分兼容端点不支持 HEAD
       if (resp.statusCode == 405 || resp.statusCode == 501) {
         resp = await _http
             .get(Uri.parse(url), headers: headers)
@@ -124,7 +127,6 @@ class CloudSyncService {
     if (resp.statusCode == 401 || resp.statusCode == 403) {
       throw StateError('鉴权失败（${resp.statusCode}），请检查 Access Key');
     }
-    // 2xx：对象存在；404：尚未上传快照，仍说明端点可达
     if ((resp.statusCode >= 200 && resp.statusCode < 300) ||
         resp.statusCode == 404) {
       return;
@@ -132,82 +134,80 @@ class CloudSyncService {
     throw StateError('S3 响应异常（${resp.statusCode}）');
   }
 
-  Future<String> _webdavPut(CloudSyncConfig c, List<int> bytes) async {
-    final url = _join(c.webdavUrl, c.webdavPath, 'piggy_snapshot.csv');
-    final resp = await _http.put(
-      Uri.parse(url),
-      headers: {
-        'Authorization': _basic(c.webdavUser, c.webdavPassword),
-        'Content-Type': 'text/csv; charset=utf-8',
-      },
-      body: bytes,
-    ).timeout(const Duration(seconds: 60));
-    if (resp.statusCode < 200 || resp.statusCode >= 300) {
-      throw StateError('WebDAV 上传失败(${resp.statusCode})');
+  Future<CloudRemoteDocument> _get(
+    CloudSyncConfig c, {
+    required bool webdav,
+  }) async {
+    final url = _objectUrl(c, webdav: webdav);
+    final resp = await _http
+        .get(Uri.parse(url), headers: _authHeaders(c, webdav: webdav))
+        .timeout(const Duration(seconds: 60));
+    if (resp.statusCode == 404) {
+      return const CloudRemoteDocument();
     }
-    return url;
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      throw StateError('${webdav ? 'WebDAV' : 'S3'} 下载失败(${resp.statusCode})');
+    }
+    return CloudRemoteDocument(
+      body: utf8.decode(resp.bodyBytes, allowMalformed: true),
+      etag: _etagOf(resp),
+    );
   }
 
-  Future<String> _webdavGet(CloudSyncConfig c) async {
-    final url = _join(c.webdavUrl, c.webdavPath, 'piggy_snapshot.csv');
-    final resp = await _http.get(
-      Uri.parse(url),
-      headers: {'Authorization': _basic(c.webdavUser, c.webdavPassword)},
-    ).timeout(const Duration(seconds: 60));
-    if (resp.statusCode < 200 || resp.statusCode >= 300) {
-      throw StateError('WebDAV 下载失败(${resp.statusCode})');
+  Future<void> _put(
+    CloudSyncConfig c,
+    List<int> bytes, {
+    required bool webdav,
+    String? ifMatch,
+  }) async {
+    final url = _objectUrl(c, webdav: webdav);
+    final headers = <String, String>{
+      ..._authHeaders(c, webdav: webdav),
+      'Content-Type': 'application/json; charset=utf-8',
+      if (ifMatch != null && ifMatch.isNotEmpty) 'If-Match': ifMatch,
+    };
+    final resp = await _http
+        .put(Uri.parse(url), headers: headers, body: bytes)
+        .timeout(const Duration(seconds: 60));
+    if (resp.statusCode == 412) {
+      throw CloudPreconditionFailed();
     }
-    return utf8.decode(resp.bodyBytes, allowMalformed: true);
-  }
-
-  /// 简化 S3：对 `https://{bucket}.{endpoint}/{key}` 或 path-style
-  /// `https://{endpoint}/{bucket}/{key}` 做匿名/签名外的 PUT（需公开或网关）。
-  ///
-  /// 完整 AWS SigV4 签名较重，MVP 要求用户填写可直接 HTTP PUT/GET 的兼容端点
-  ///（如部分自建 MinIO 预签名 URL 根路径）。若失败给出明确中文提示。
-  Future<String> _s3Put(CloudSyncConfig c, List<int> bytes) async {
-    final url = _s3ObjectUrl(c);
-    final resp = await _http.put(
-      Uri.parse(url),
-      headers: {
-        'Content-Type': 'text/csv; charset=utf-8',
-        if (c.s3AccessKey.isNotEmpty)
-          'Authorization': 'Bearer ${c.s3AccessKey}',
-      },
-      body: bytes,
-    ).timeout(const Duration(seconds: 60));
     if (resp.statusCode < 200 || resp.statusCode >= 300) {
       throw StateError(
-        'S3 上传失败(${resp.statusCode})。若使用标准 AWS，请配置支持匿名/网关 PUT 的兼容端点，或改用 WebDAV。',
+        webdav
+            ? 'WebDAV 上传失败(${resp.statusCode})'
+            : 'S3 上传失败(${resp.statusCode})。若使用标准 AWS，请配置支持匿名/网关 PUT 的兼容端点，或改用 WebDAV。',
       );
     }
-    return url;
   }
 
-  Future<String> _s3Get(CloudSyncConfig c) async {
-    final url = _s3ObjectUrl(c);
-    final resp = await _http.get(
-      Uri.parse(url),
-      headers: {
-        if (c.s3AccessKey.isNotEmpty)
-          'Authorization': 'Bearer ${c.s3AccessKey}',
-      },
-    ).timeout(const Duration(seconds: 60));
-    if (resp.statusCode < 200 || resp.statusCode >= 300) {
-      throw StateError('S3 下载失败(${resp.statusCode})');
+  Map<String, String> _authHeaders(
+    CloudSyncConfig c, {
+    required bool webdav,
+  }) {
+    if (webdav) {
+      return {'Authorization': _basic(c.webdavUser, c.webdavPassword)};
     }
-    return utf8.decode(resp.bodyBytes, allowMalformed: true);
+    return {
+      if (c.s3AccessKey.isNotEmpty) 'Authorization': 'Bearer ${c.s3AccessKey}',
+    };
   }
 
-  String _s3ObjectUrl(CloudSyncConfig c) {
+  String _objectUrl(CloudSyncConfig c, {required bool webdav}) {
+    if (webdav) {
+      return _join(c.webdavUrl, c.webdavPath, remoteFile);
+    }
     final endpoint = c.s3Endpoint.replaceAll(RegExp(r'/+$'), '');
     final bucket = c.s3Bucket.trim();
-    final key = 'piggy_snapshot.csv';
     if (endpoint.contains('://')) {
-      return '$endpoint/$bucket/$key';
+      return '$endpoint/$bucket/$remoteFile';
     }
     final scheme = c.s3UseSsl ? 'https' : 'http';
-    return '$scheme://$endpoint/$bucket/$key';
+    return '$scheme://$endpoint/$bucket/$remoteFile';
+  }
+
+  String? _etagOf(http.Response resp) {
+    return resp.headers['etag'] ?? resp.headers['ETag'];
   }
 
   String _join(String base, String path, String file) {

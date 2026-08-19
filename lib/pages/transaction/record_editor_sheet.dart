@@ -1,37 +1,40 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../../data/app_database.dart';
+import '../../data/repositories/tag_repository.dart';
 import '../../providers/database_provider.dart';
 import '../../providers/ledger_session_provider.dart';
 import '../../providers/transaction_providers.dart';
+import '../../providers/widget_providers.dart';
 import '../../styles/tokens.dart';
+import '../../utils/happened_at.dart';
+import '../../utils/tag_colors.dart';
 import '../../widgets/category_icon_view.dart';
 import '../../widgets/page_status.dart';
+import '../../widgets/workspace_sheet.dart';
 import 'amount_keypad.dart';
+import 'image_billing_sheet.dart';
 
 /// 打开记一笔 / 编辑账单底部弹层。
 ///
 /// [transactionId] 非空时为编辑模式。
 /// [initialDate] 新建时预填发生日期（日历「在该日记账」用）。
+/// [initialType] 新建时预填 `expense` / `income`（桌面小组件深链用）。
 /// 进出使用略加长的 easeOutCubic，比系统默认更顺一点。
 Future<void> showRecordEditorSheet(
   BuildContext context, {
   int? transactionId,
   DateTime? initialDate,
+  String? initialType,
 }) {
-  return showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    useSafeArea: true,
-    backgroundColor: PigTokens.surface,
-    barrierColor: Colors.black.withValues(alpha: 0.45),
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(
-        top: Radius.circular(PigTokens.radiusSheet),
-      ),
-    ),
+  return showWorkspaceSheet<void>(
+    context,
+    fixedHeight: true,
+    ignoreKeyboard: true,
     sheetAnimationStyle: const AnimationStyle(
       duration: Duration(milliseconds: 320),
       reverseDuration: Duration(milliseconds: 240),
@@ -41,20 +44,24 @@ Future<void> showRecordEditorSheet(
     builder: (_) => RecordEditorSheet(
       transactionId: transactionId,
       initialDate: initialDate,
+      initialType: initialType,
     ),
   );
 }
 
-/// 记一笔表单（对照 fig3；备注旁无相机）。
+/// 记一笔表单（对照 fig3；新建时备注旁有相机入口，ADR-016）。
 class RecordEditorSheet extends ConsumerStatefulWidget {
   const RecordEditorSheet({
     super.key,
     this.transactionId,
     this.initialDate,
+    this.initialType,
   });
 
   final int? transactionId;
   final DateTime? initialDate;
+  /// 新建时：`expense` / `income`。
+  final String? initialType;
 
   @override
   ConsumerState<RecordEditorSheet> createState() => _RecordEditorSheetState();
@@ -79,10 +86,13 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
     super.initState();
     final seed = widget.initialDate;
     if (seed != null && !_isEdit) {
-      // 锁到中午，避免时区边界把自然日算错。
-      _happenedAt = DateTime(seed.year, seed.month, seed.day, 12);
+      _happenedAt = HappenedAt.onCalendarDay(seed);
     } else {
-      _happenedAt = DateTime.now();
+      _happenedAt = HappenedAt.now();
+    }
+    final t = widget.initialType;
+    if (!_isEdit && (t == 'expense' || t == 'income')) {
+      _type = t!;
     }
     if (_isEdit) {
       Future.microtask(_bootstrapEdit);
@@ -128,6 +138,17 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
   String _formatAmount(double v) {
     if (v == v.roundToDouble()) return v.toInt().toString();
     return v.toStringAsFixed(2).replaceFirst(RegExp(r'\.?0+$'), '');
+  }
+
+  void _pruneTagsForType(String type) {
+    final bundles = ref.read(tagGroupBundlesProvider).valueOrNull;
+    if (bundles == null) return;
+    final allowed = <int>{
+      for (final b in bundles)
+        if (TagGroupScope.matchesType(b.group.scope, type))
+          for (final t in b.tags) t.id,
+    };
+    _tagIds.removeWhere((id) => !allowed.contains(id));
   }
 
   /// 将 `12+3-1.5` 求值为 double；非法时返回 null。
@@ -218,13 +239,7 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
     );
     if (d == null) return;
     setState(() {
-      _happenedAt = DateTime(
-        d.year,
-        d.month,
-        d.day,
-        _happenedAt.hour,
-        _happenedAt.minute,
-      );
+      _happenedAt = HappenedAt.withDate(_happenedAt, d);
     });
   }
 
@@ -235,10 +250,8 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
     );
     if (t == null) return;
     setState(() {
-      _happenedAt = DateTime(
-        _happenedAt.year,
-        _happenedAt.month,
-        _happenedAt.day,
+      _happenedAt = HappenedAt.withHourMinute(
+        _happenedAt,
         t.hour,
         t.minute,
       );
@@ -250,6 +263,57 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
     );
+  }
+
+  /// 备注旁相机：先选拍照/相册，关本弹层丢草稿，再走 Vision（ADR-016）。
+  Future<void> _onNoteCamera() async {
+    final choice = await showModalBottomSheet<_NoteCameraChoice>(
+      context: context,
+      backgroundColor: PigTokens.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(PigTokens.radiusSheet),
+        ),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.photo_camera_outlined),
+                title: const Text('拍照'),
+                onTap: () => Navigator.pop(ctx, _NoteCameraChoice.camera),
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_outlined),
+                title: const Text('从相册'),
+                onTap: () => Navigator.pop(ctx, _NoteCameraChoice.gallery),
+              ),
+              ListTile(
+                title: const Text('取消', textAlign: TextAlign.center),
+                onTap: () => Navigator.pop(ctx),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (choice == null || !mounted) return;
+
+    final navigator = Navigator.of(context);
+    navigator.pop(); // 关闭记一笔，丢弃未保存草稿
+
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    if (!navigator.mounted) return;
+    final host = navigator.context;
+    if (!host.mounted) return;
+    switch (choice) {
+      case _NoteCameraChoice.camera:
+        await takePhotoForBilling(host);
+      case _NoteCameraChoice.gallery:
+        await pickImageForBilling(host, source: 'screenshot');
+    }
   }
 
   Future<bool> _persist({required bool keepOpen}) async {
@@ -289,6 +353,8 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
           tagIds: _tagIds.toList(),
         );
       }
+      // 桌面小组件：保存成功后尽快刷新数字
+      unawaited(updateAppWidget(ref));
       if (keepOpen) {
         setState(() {
           _amountExpr = '';
@@ -300,6 +366,9 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
       }
       if (mounted) Navigator.of(context).pop();
       return true;
+    } on StateError catch (e) {
+      _toast(e.message);
+      return false;
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -314,6 +383,81 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
     return DateFormat('M月d日').format(_happenedAt);
   }
 
+  /// 主界面标签摘要：已选名；过多则「A、B +N」；空则未选择 / 暂无可用。
+  String _tagSummary(List<TagGroupBundle> visible) {
+    final names = <String>[];
+    for (final b in visible) {
+      for (final t in b.tags) {
+        if (_tagIds.contains(t.id)) names.add(t.name);
+      }
+    }
+    if (names.isEmpty) {
+      final hasTags = visible.any((b) => b.tags.isNotEmpty);
+      return hasTags ? '未选择' : '暂无可用标签';
+    }
+    if (names.length <= 2) return names.join('、');
+    return '${names.take(2).join('、')} +${names.length - 2}';
+  }
+
+  void _toggleTag(TagGroupBundle bundle, Tag tag, bool selected) {
+    setState(() {
+      if (bundle.isNumber) {
+        for (final t in bundle.tags) {
+          _tagIds.remove(t.id);
+        }
+        if (selected) _tagIds.add(tag.id);
+      } else if (selected) {
+        _tagIds.add(tag.id);
+      } else {
+        _tagIds.remove(tag.id);
+      }
+    });
+  }
+
+  Future<void> _openTagPicker(List<TagGroupBundle> visible) {
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: PigTokens.surface,
+      barrierColor: Colors.black.withValues(alpha: 0.35),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(PigTokens.radiusSheet),
+        ),
+      ),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return _TagPickerSheet(
+              bundles: visible,
+              selectedIds: _tagIds,
+              onToggle: (bundle, tag, selected) {
+                _toggleTag(bundle, tag, selected);
+                setModalState(() {});
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// 备注另开较矮弹层调系统键盘；主层始终保留金额键盘（ADR-039）。
+  Future<void> _openNoteEditor() async {
+    final result = await showWorkspaceSheet<String>(
+      context,
+      fixedHeight: true,
+      ignoreKeyboard: false,
+      useRootNavigator: true,
+      heightFraction: PigTokens.noteSheetFraction,
+      barrierColor: Colors.black.withValues(alpha: 0.35),
+      builder: (_) => _NoteEditorSheet(initialText: _noteController.text),
+    );
+    if (result == null || !mounted) return;
+    setState(() => _noteController.text = result);
+  }
+
   @override
   Widget build(BuildContext context) {
     final catsAsync = _type == 'expense'
@@ -321,19 +465,15 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
         : ref.watch(incomeCategoriesProvider);
     final tagBundlesAsync = ref.watch(tagGroupBundlesProvider);
 
-    final bottom = MediaQuery.viewInsetsOf(context).bottom;
-
-    // 自带 Scaffold，保证校验 SnackBar 显示在记一笔弹层内
-    return Padding(
-      padding: EdgeInsets.only(bottom: bottom),
-      child: Scaffold(
-        backgroundColor: PigTokens.surface,
-        body: SafeArea(
-          top: false,
-          child: SizedBox(
-            height: MediaQuery.sizeOf(context).height * 0.92,
-            child: Column(
-              children: [
+    // 自带 Scaffold，保证校验 SnackBar 显示在记一笔弹层内。
+    // 高度由 showWorkspaceSheet(fixedHeight) 钉死；Scaffold 本身会吃满最大约束。
+    return Scaffold(
+      backgroundColor: PigTokens.surface,
+      resizeToAvoidBottomInset: false,
+      body: SafeArea(
+        top: false,
+        child: Column(
+          children: [
                 const SizedBox(height: PigTokens.spaceSm),
                 Container(
                   width: 36,
@@ -359,6 +499,7 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
                             _type = t;
                             _parentId = null;
                             _categoryId = null;
+                            _pruneTagsForType(t);
                           });
                         },
                       ),
@@ -384,9 +525,9 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
                 ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(
-                    PigTokens.spaceXl,
+                    PigTokens.spaceSm,
                     PigTokens.spaceMd,
-                    PigTokens.spaceXl,
+                    PigTokens.spaceSm,
                     PigTokens.spaceMd,
                   ),
                   child: Row(
@@ -457,114 +598,66 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
                 ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(
-                    PigTokens.spaceLg,
+                    PigTokens.spaceSm,
                     0,
-                    PigTokens.spaceLg,
+                    PigTokens.spaceSm,
                     PigTokens.spaceSm,
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      TextField(
-                        controller: _noteController,
-                        decoration: InputDecoration(
-                          hintText: '点击填写备注',
-                          filled: true,
-                          fillColor: PigTokens.surfaceInput,
-                          border: OutlineInputBorder(
-                            borderRadius:
-                                BorderRadius.circular(PigTokens.radiusCard),
-                            borderSide: BorderSide.none,
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Expanded(
+                            child: _NoteEntryRow(
+                              text: _noteController.text,
+                              onTap: _loading ? null : _openNoteEditor,
+                            ),
                           ),
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: PigTokens.spaceMd,
-                            vertical: 10,
-                          ),
-                        ),
+                          if (!_isEdit) ...[
+                            const SizedBox(width: PigTokens.spaceSm),
+                            IconButton(
+                              onPressed: _loading ? null : _onNoteCamera,
+                              tooltip: '图片记账',
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                minWidth: 40,
+                                minHeight: 40,
+                              ),
+                              icon: const Icon(
+                                Icons.photo_camera_outlined,
+                                color: PigTokens.textTertiary,
+                                size: 26,
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                       const SizedBox(height: PigTokens.spaceSm),
                       tagBundlesAsync.when(
                         loading: () => const SizedBox.shrink(),
                         error: (_, _) => const SizedBox.shrink(),
                         data: (bundles) {
-                          final hasTags =
-                              bundles.any((b) => b.tags.isNotEmpty);
-                          if (!hasTags) {
-                            return const Text(
-                              '暂无标签，可在「我的 → 标签管理」添加',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: PigTokens.textTertiary,
-                              ),
-                            );
-                          }
-                          return Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              for (final bundle in bundles)
-                                if (bundle.tags.isNotEmpty) ...[
-                                  Padding(
-                                    padding: const EdgeInsets.only(
-                                      top: PigTokens.spaceXs,
-                                      bottom: PigTokens.spaceXs,
-                                    ),
-                                    child: Text(
-                                      bundle.group.name,
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w600,
-                                        color: PigTokens.textTertiary,
-                                      ),
-                                    ),
-                                  ),
-                                  Wrap(
-                                    spacing: PigTokens.spaceSm,
-                                    runSpacing: PigTokens.spaceXs,
-                                    children: [
-                                      for (final tag in bundle.tags)
-                                        FilterChip(
-                                          label: Text(tag.name),
-                                          selected:
-                                              _tagIds.contains(tag.id),
-                                          showCheckmark: false,
-                                          selectedColor:
-                                              PigTokens.primarySoft,
-                                          labelStyle: TextStyle(
-                                            color: _tagIds.contains(tag.id)
-                                                ? PigTokens.primary
-                                                : PigTokens.textSecondary,
-                                            fontWeight: FontWeight.w500,
-                                            fontSize: 13,
-                                          ),
-                                          side: BorderSide.none,
-                                          onSelected: (sel) {
-                                            setState(() {
-                                              if (bundle.isNumber) {
-                                                for (final t
-                                                    in bundle.tags) {
-                                                  _tagIds.remove(t.id);
-                                                }
-                                                if (sel) {
-                                                  _tagIds.add(tag.id);
-                                                }
-                                              } else if (sel) {
-                                                _tagIds.add(tag.id);
-                                              } else {
-                                                _tagIds.remove(tag.id);
-                                              }
-                                            });
-                                          },
-                                        ),
-                                    ],
-                                  ),
-                                ],
-                            ],
+                          final visible = bundles
+                              .where(
+                                (b) => TagGroupScope.matchesType(
+                                  b.group.scope,
+                                  _type,
+                                ),
+                              )
+                              .toList();
+                          return _TagEntryRow(
+                            summary: _tagSummary(visible),
+                            onTap: () => _openTagPicker(visible),
                           );
                         },
                       ),
                     ],
                   ),
                 ),
+                // 主层固定金额键盘；备注在独立弹层用系统键盘（ADR-039）。
                 Padding(
                   padding: const EdgeInsets.fromLTRB(
                     PigTokens.spaceSm,
@@ -584,7 +677,373 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
                 ),
               ],
             ),
+        ),
+      );
+  }
+}
+
+/// 主层备注入口：只展示摘要，点开记一笔备注弹层（ADR-039）。
+class _NoteEntryRow extends StatelessWidget {
+  const _NoteEntryRow({
+    required this.text,
+    required this.onTap,
+  });
+
+  final String text;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final empty = text.trim().isEmpty;
+    return Material(
+      color: PigTokens.surfaceInput,
+      borderRadius: BorderRadius.circular(PigTokens.radiusCard),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(PigTokens.radiusCard),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: PigTokens.spaceMd,
+            vertical: 10,
           ),
+          child: Text(
+            empty ? '点击填写备注' : text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 14,
+              color: empty ? PigTokens.textTertiary : PigTokens.textPrimary,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 记一笔备注弹层：较矮、自动聚焦系统键盘；点「完成」才写回（ADR-039）。
+class _NoteEditorSheet extends StatefulWidget {
+  const _NoteEditorSheet({required this.initialText});
+
+  final String initialText;
+
+  @override
+  State<_NoteEditorSheet> createState() => _NoteEditorSheetState();
+}
+
+class _NoteEditorSheetState extends State<_NoteEditorSheet> {
+  late final TextEditingController _controller;
+  final _focus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialText);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _focus.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _focus.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _complete() {
+    Navigator.of(context).pop(_controller.text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: Column(
+        children: [
+              const SizedBox(height: PigTokens.spaceSm),
+              Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: PigTokens.textTertiary.withValues(alpha: 0.35),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  PigTokens.spaceLg,
+                  PigTokens.spaceMd,
+                  PigTokens.spaceSm,
+                  PigTokens.spaceSm,
+                ),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        '备注',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: PigTokens.textPrimary,
+                        ),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: _complete,
+                      child: const Text('完成'),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    PigTokens.spaceSm,
+                    0,
+                    PigTokens.spaceSm,
+                    PigTokens.spaceSm,
+                  ),
+                  child: TextField(
+                    controller: _controller,
+                    focusNode: _focus,
+                    autofocus: true,
+                    maxLines: null,
+                    expands: true,
+                    textAlignVertical: TextAlignVertical.top,
+                    textInputAction: TextInputAction.newline,
+                    decoration: InputDecoration(
+                      hintText: '填写备注',
+                      hintStyle: const TextStyle(
+                        color: PigTokens.textTertiary,
+                        fontSize: 14,
+                      ),
+                      filled: true,
+                      fillColor: PigTokens.surfaceInput,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(
+                          PigTokens.radiusCard,
+                        ),
+                        borderSide: BorderSide.none,
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(
+                          PigTokens.radiusCard,
+                        ),
+                        borderSide: BorderSide.none,
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(
+                          PigTokens.radiusCard,
+                        ),
+                        borderSide: const BorderSide(
+                          color: PigTokens.primarySoft,
+                        ),
+                      ),
+                      contentPadding: const EdgeInsets.all(PigTokens.spaceMd),
+                    ),
+                    style: const TextStyle(
+                      fontSize: 14,
+                      color: PigTokens.textPrimary,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+    );
+  }
+}
+
+/// 备注下方「标签」入口行：摘要 + 打开选标弹层。
+class _TagEntryRow extends StatelessWidget {
+  const _TagEntryRow({
+    required this.summary,
+    required this.onTap,
+  });
+
+  final String summary;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: PigTokens.surfaceInput,
+      borderRadius: BorderRadius.circular(PigTokens.radiusCard),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(PigTokens.radiusCard),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: PigTokens.spaceMd,
+            vertical: PigTokens.spaceSm,
+          ),
+          child: Row(
+            children: [
+              const Text(
+                '标签',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: PigTokens.textPrimary,
+                ),
+              ),
+              const SizedBox(width: PigTokens.spaceMd),
+              Expanded(
+                child: Text(
+                  summary,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.right,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: summary == '未选择' || summary == '暂无可用标签'
+                        ? PigTokens.textTertiary
+                        : PigTokens.textSecondary,
+                  ),
+                ),
+              ),
+              const SizedBox(width: PigTokens.spaceXs),
+              const Icon(
+                Icons.chevron_right,
+                size: 18,
+                color: PigTokens.textTertiary,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 记一笔选标弹层：按组展示 chip，点选即时生效。
+class _TagPickerSheet extends StatelessWidget {
+  const _TagPickerSheet({
+    required this.bundles,
+    required this.selectedIds,
+    required this.onToggle,
+  });
+
+  final List<TagGroupBundle> bundles;
+  final Set<int> selectedIds;
+  final void Function(TagGroupBundle bundle, Tag tag, bool selected) onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasTags = bundles.any((b) => b.tags.isNotEmpty);
+    final maxH = MediaQuery.sizeOf(context).height * 0.55;
+
+    return SafeArea(
+      top: false,
+      child: SizedBox(
+        height: maxH,
+        child: Column(
+          children: [
+            const SizedBox(height: PigTokens.spaceSm),
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: PigTokens.textTertiary.withValues(alpha: 0.35),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(
+                PigTokens.spaceLg,
+                PigTokens.spaceMd,
+                PigTokens.spaceLg,
+                PigTokens.spaceSm,
+              ),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '选择标签',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: PigTokens.textPrimary,
+                  ),
+                ),
+              ),
+            ),
+            Expanded(
+              child: !hasTags
+                  ? const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(PigTokens.spaceLg),
+                        child: Text(
+                          '暂无可用标签，可在「我的 → 标签管理」添加',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: PigTokens.textTertiary,
+                          ),
+                        ),
+                      ),
+                    )
+                  : ListView(
+                      padding: const EdgeInsets.fromLTRB(
+                        PigTokens.spaceLg,
+                        0,
+                        PigTokens.spaceLg,
+                        PigTokens.spaceLg,
+                      ),
+                      children: [
+                        for (final bundle in bundles)
+                          if (bundle.tags.isNotEmpty) ...[
+                            Padding(
+                              padding: const EdgeInsets.only(
+                                top: PigTokens.spaceSm,
+                                bottom: PigTokens.spaceXs,
+                              ),
+                              child: Text(
+                                bundle.group.name,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: PigTokens.textTertiary,
+                                ),
+                              ),
+                            ),
+                            Wrap(
+                              spacing: PigTokens.spaceSm,
+                              runSpacing: PigTokens.spaceXs,
+                              children: [
+                                for (final tag in bundle.tags)
+                                  FilterChip(
+                                    label: Text(tag.name),
+                                    selected: selectedIds.contains(tag.id),
+                                    showCheckmark: false,
+                                    selectedColor: TagColors.parse(tag.color)
+                                        .withValues(alpha: 0.18),
+                                    backgroundColor: TagColors.parse(tag.color)
+                                        .withValues(alpha: 0.08),
+                                    labelStyle: TextStyle(
+                                      color: TagColors.parse(tag.color),
+                                      fontWeight: selectedIds.contains(tag.id)
+                                          ? FontWeight.w600
+                                          : FontWeight.w500,
+                                      fontSize: 13,
+                                    ),
+                                    side: BorderSide(
+                                      color: selectedIds.contains(tag.id)
+                                          ? TagColors.parse(tag.color)
+                                          : Colors.transparent,
+                                      width: 1.5,
+                                    ),
+                                    onSelected: (sel) =>
+                                        onToggle(bundle, tag, sel),
+                                  ),
+                              ],
+                            ),
+                          ],
+                      ],
+                    ),
+            ),
+          ],
         ),
       ),
     );
@@ -711,7 +1170,8 @@ class _CategoryPicker extends StatelessWidget {
   final ValueChanged<int> onChild;
   final VoidCallback onAdd;
 
-  static const _chipW = 68.0;
+  /// 均分列宽时的参考芯片宽，用于估算列数。
+  static const _refChipW = 68.0;
   static const _spacing = PigTokens.spaceSm;
 
   @override
@@ -726,9 +1186,13 @@ class _CategoryPicker extends StatelessWidget {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final cols = ((constraints.maxWidth + _spacing) / (_chipW + _spacing))
+        // 与备注/键盘同一内容区：左右 spaceSm，列宽按扣边距后均分。
+        const inset = PigTokens.spaceSm;
+        final contentW = constraints.maxWidth - inset * 2;
+        final cols = ((contentW + _spacing) / (_refChipW + _spacing))
             .floor()
             .clamp(4, 6);
+        final chipW = (contentW - _spacing * (cols - 1)) / cols;
         final rows = <Widget>[];
         for (var i = 0; i < parents.length; i += cols) {
           final end = (i + cols).clamp(0, parents.length);
@@ -740,7 +1204,7 @@ class _CategoryPicker extends StatelessWidget {
                 for (var j = 0; j < rowItems.length; j++) ...[
                   if (j > 0) const SizedBox(width: _spacing),
                   SizedBox(
-                    width: _chipW,
+                    width: chipW,
                     child: _CatChip(
                       label: rowItems[j].name,
                       category: rowItems[j],
@@ -808,9 +1272,9 @@ class _CategoryPicker extends StatelessWidget {
 
         return ListView(
           padding: const EdgeInsets.fromLTRB(
-            PigTokens.spaceMd,
+            inset,
             PigTokens.spaceSm,
-            PigTokens.spaceMd,
+            inset,
             PigTokens.spaceSm,
           ),
           children: rows,
@@ -841,7 +1305,9 @@ class _CatChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = selected ? PigTokens.primary : PigTokens.textSecondary;
+    // 与分类管理「改为子类」一致：未选灰显，选中全彩。
+    final color =
+        selected ? PigTokens.textPrimary : PigTokens.textTertiary;
     final diameter = compact ? 40.0 : 44.0;
     final iconSize = compact ? 20.0 : 22.0;
     final fallbackColor = iconColor ?? PigTokens.textTertiary;
@@ -855,7 +1321,6 @@ class _CatChip extends StatelessWidget {
         customIconPath: category!.customIconPath,
         diameter: diameter,
         iconSize: iconSize,
-        backgroundColor: selected ? PigTokens.primarySoft : null,
       );
     } else {
       avatar = Container(
@@ -868,7 +1333,7 @@ class _CatChip extends StatelessWidget {
           shape: BoxShape.circle,
         ),
         child: Icon(
-          icon ?? Icons.category_outlined,
+          icon ?? Icons.category,
           color: selected ? PigTokens.primary : fallbackColor,
           size: iconSize,
         ),
@@ -879,17 +1344,11 @@ class _CatChip extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(PigTokens.radiusCard),
       child: SizedBox(
-        width: compact ? 64 : 68,
+        width: compact ? 64 : double.infinity,
         child: Column(
           children: [
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 160),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: selected
-                    ? Border.all(color: PigTokens.primary, width: 1.5)
-                    : null,
-              ),
+            Opacity(
+              opacity: selected ? 1 : 0.45,
               child: avatar,
             ),
             const SizedBox(height: PigTokens.spaceXs),
@@ -897,6 +1356,7 @@ class _CatChip extends StatelessWidget {
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
               style: TextStyle(fontSize: 11, color: color),
             ),
           ],
@@ -905,3 +1365,5 @@ class _CatChip extends StatelessWidget {
     );
   }
 }
+
+enum _NoteCameraChoice { camera, gallery }

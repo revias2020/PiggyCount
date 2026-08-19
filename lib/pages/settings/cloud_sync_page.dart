@@ -4,10 +4,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../services/sync/cloud_sync_actions.dart';
 import '../../services/sync/cloud_sync_config.dart';
 import '../../services/sync/cloud_sync_providers.dart';
+import '../../services/system/logger_service.dart';
 import '../../styles/tokens.dart';
 import '../../widgets/capsule_switcher.dart';
 
-/// 云服务：WebDAV / S3 配置 + 上传/下载快照。
+/// 云服务：WebDAV / S3 连接配置（不含上传/下载）。
 class CloudSyncPage extends ConsumerStatefulWidget {
   const CloudSyncPage({super.key});
 
@@ -28,7 +29,6 @@ class _CloudSyncPageState extends ConsumerState<CloudSyncPage> {
   final _s3Bucket = TextEditingController();
   bool _s3Ssl = true;
   bool _loading = true;
-  bool _busy = false;
   bool _testing = false;
 
   @override
@@ -86,10 +86,6 @@ class _CloudSyncPageState extends ConsumerState<CloudSyncPage> {
         s3UseSsl: _s3Ssl,
       );
 
-  void _onFormChanged() {
-    if (mounted) setState(() {});
-  }
-
   Future<void> _save() async {
     final store = ref.read(cloudSyncConfigStoreProvider);
     final previous = await store.load();
@@ -127,7 +123,8 @@ class _CloudSyncPageState extends ConsumerState<CloudSyncPage> {
         ),
       );
       setState(() {});
-    } catch (e) {
+    } catch (e, st) {
+      logger.error('Cloud', '连接测试失败', e, st);
       if (!mounted) return;
       await showDialog<void>(
         context: context,
@@ -147,59 +144,8 @@ class _CloudSyncPageState extends ConsumerState<CloudSyncPage> {
     }
   }
 
-  Future<void> _upload() async {
-    setState(() => _busy = true);
-    try {
-      final url = await uploadCloudLedgerSnapshot(ref: ref, config: _build());
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('上传成功：$url')),
-      );
-      setState(() {});
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('上传失败：$e')),
-      );
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _download() async {
-    if (!await confirmCloudDownload(context)) return;
-
-    setState(() => _busy = true);
-    try {
-      final n =
-          await downloadAndImportCloudSnapshot(ref: ref, config: _build());
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已从云端导入 $n 笔')),
-      );
-      setState(() {});
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('下载失败：$e')),
-      );
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  /// 已落盘且已测通，且当前表单指纹未变。
-  bool _canShowActions(CloudSyncConfig? saved) {
-    if (saved == null || !saved.isReadyForSync) return false;
-    return _build().connectionFingerprint() == saved.verifiedFingerprint;
-  }
-
   @override
   Widget build(BuildContext context) {
-    final savedAsync = ref.watch(cloudSyncConfigProvider);
-    final saved = savedAsync.valueOrNull;
-    final showActions = _canShowActions(saved);
-
     return Scaffold(
       backgroundColor: PigTokens.scaffoldBackground,
       appBar: AppBar(
@@ -214,91 +160,26 @@ class _CloudSyncPageState extends ConsumerState<CloudSyncPage> {
               padding: const EdgeInsets.all(16),
               children: [
                 const Text(
-                  '默认仅本机存储。开启后可将当前账本 CSV 快照上传/下载。\n'
-                  '凭证只保存在本机。冲突策略：下载时追加导入，不静默覆盖。\n'
-                  '测通成功后才会显示上传/下载；改凭证后需重新测通。',
+                  '默认仅本机存储。选择 WebDAV 或 S3 并测通后，可在「同步」对齐全部账本与分类/标签。\n'
+                  '凭证只保存在本机。改凭证后需重新测通。',
                   style: TextStyle(fontSize: 13, color: PigTokens.textTertiary),
                 ),
-                if (showActions) ...[
-                  const SizedBox(height: 16),
-                  _actionButtons(),
-                  const SizedBox(height: 16),
-                  _card(
-                    child: Theme(
-                      data: Theme.of(context)
-                          .copyWith(dividerColor: Colors.transparent),
-                      child: ExpansionTile(
-                        tilePadding: EdgeInsets.zero,
-                        childrenPadding: const EdgeInsets.only(bottom: 4),
-                        title: const Text(
-                          '连接配置',
-                          style: TextStyle(fontWeight: FontWeight.w700),
-                        ),
-                        children: [
-                          _kindPicker(),
-                          if (_kind == CloudSyncKind.webdav) ...[
-                            const SizedBox(height: 12),
-                            _webdavFields(),
-                          ],
-                          if (_kind == CloudSyncKind.s3) ...[
-                            const SizedBox(height: 12),
-                            _s3Fields(),
-                          ],
-                          if (_kind != CloudSyncKind.none) ...[
-                            const SizedBox(height: 8),
-                            _testButton(),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ),
-                ] else ...[
+                const SizedBox(height: 12),
+                _card(child: _kindPicker()),
+                if (_kind == CloudSyncKind.webdav) ...[
                   const SizedBox(height: 12),
-                  _card(child: _kindPicker()),
-                  if (_kind == CloudSyncKind.webdav) ...[
-                    const SizedBox(height: 12),
-                    _card(child: _webdavFields()),
-                  ],
-                  if (_kind == CloudSyncKind.s3) ...[
-                    const SizedBox(height: 12),
-                    _card(child: _s3Fields()),
-                  ],
-                  if (_kind != CloudSyncKind.none) ...[
-                    const SizedBox(height: 16),
-                    _testButton(),
-                  ],
+                  _card(child: _webdavFields()),
+                ],
+                if (_kind == CloudSyncKind.s3) ...[
+                  const SizedBox(height: 12),
+                  _card(child: _s3Fields()),
+                ],
+                if (_kind != CloudSyncKind.none) ...[
+                  const SizedBox(height: 16),
+                  _testButton(),
                 ],
               ],
             ),
-    );
-  }
-
-  Widget _actionButtons() {
-    return Row(
-      children: [
-        Expanded(
-          child: OutlinedButton(
-            onPressed: _busy || _testing ? null : _download,
-            child: const Text('下载并导入'),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: FilledButton(
-            onPressed: _busy || _testing ? null : _upload,
-            child: _busy
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
-                  )
-                : const Text('上传当前账本'),
-          ),
-        ),
-      ],
     );
   }
 
@@ -306,7 +187,7 @@ class _CloudSyncPageState extends ConsumerState<CloudSyncPage> {
     return SizedBox(
       width: double.infinity,
       child: OutlinedButton(
-        onPressed: _busy || _testing ? null : _testConnection,
+        onPressed: _testing ? null : _testConnection,
         child: _testing
             ? const SizedBox(
                 width: 18,
@@ -370,14 +251,14 @@ class _CloudSyncPageState extends ConsumerState<CloudSyncPage> {
     );
   }
 
-  Widget _card({required Widget child}) => Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: PigTokens.surface,
-          borderRadius: BorderRadius.circular(PigTokens.radiusCard),
+  Widget _card({required Widget child}) => Material(
+        color: PigTokens.surface,
+        borderRadius: BorderRadius.circular(PigTokens.radiusCard),
+        clipBehavior: Clip.antiAlias,
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: SizedBox(width: double.infinity, child: child),
         ),
-        child: child,
       );
 
   Widget _field(
@@ -391,7 +272,6 @@ class _CloudSyncPageState extends ConsumerState<CloudSyncPage> {
       child: TextField(
         controller: c,
         obscureText: obscure,
-        onChanged: (_) => _onFormChanged(),
         decoration: InputDecoration(
           labelText: label,
           hintText: hint,

@@ -1,26 +1,30 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../../ai/ai_config_store.dart';
+import '../../ai/ai_provider_config.dart';
+import '../../ai/ai_provider_store.dart';
 import '../ai/ai_bookkeeper.dart';
+import '../system/logger_service.dart';
 import 'billing_notification_service.dart';
 
-/// 截图/分享图片 → Vision 提取 → 自动落库（后台渠道；前台分享可另走确认弹层）。
+/// 截图/分享图片 → Vision 提取 → 自动落库（后台通知渠道，ADR-018）。
 class AutoBillingService {
   AutoBillingService({
     required this.bookkeeper,
     required this.resolveLedgerId,
     BillingNotificationService? notifications,
-    AiConfigStore? configStore,
+    AiProviderStore? providerStore,
   })  : notifications = notifications ?? BillingNotificationService(),
-        _configStore = configStore ?? AiConfigStore();
+        _providerStore = providerStore ?? AiProviderStore();
 
   final AiBookkeeper bookkeeper;
   final Future<int?> Function() resolveLedgerId;
   final BillingNotificationService notifications;
-  final AiConfigStore _configStore;
+  final AiProviderStore _providerStore;
 
   static const _processedKey = 'piggy_processed_screenshots';
   static const _dupWindowMs = 5000;
@@ -30,6 +34,9 @@ class AutoBillingService {
   String? _lastPath;
   int _lastTime = 0;
   bool _loaded = false;
+
+  /// 多张串行：后一张等前一张结束（ADR-018）。
+  Future<void> _queue = Future.value();
 
   Future<void> _ensureCache() async {
     if (_loaded) return;
@@ -57,8 +64,32 @@ class AutoBillingService {
     required String source,
     bool showNotification = true,
     bool autoSave = true,
+  }) {
+    final done = Completer<List<int>>();
+    _queue = _queue.then((_) async {
+      try {
+        final ids = await _processImagePathLocked(
+          imagePath,
+          source: source,
+          showNotification: showNotification,
+          autoSave: autoSave,
+        );
+        done.complete(ids);
+      } catch (e, st) {
+        done.completeError(e, st);
+      }
+    });
+    return done.future;
+  }
+
+  Future<List<int>> _processImagePathLocked(
+    String imagePath, {
+    required String source,
+    required bool showNotification,
+    required bool autoSave,
   }) async {
     await _ensureCache();
+    // 已处理 / 短窗去重：静默跳过，不打点（ADR-022）
     if (_processed.contains(imagePath)) return const [];
 
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -68,12 +99,19 @@ class AutoBillingService {
     _lastPath = imagePath;
     _lastTime = now;
 
-    final cfg = await _configStore.load();
-    if (!cfg.isConfigured) {
+    final fileName = p.basename(imagePath);
+    logger.info('AutoBilling', '触发 source=$source file=$fileName');
+
+    late final AiServiceProvider provider;
+    try {
+      provider = await _providerStore.resolve(AiCapabilityKind.vision);
+    } on AiCapabilityNotReadyException catch (e) {
+      logger.warning('AutoBilling', '能力未就绪 source=$source: ${e.message}');
       if (showNotification) {
         await notifications.showResult(
           title: '无法自动记账',
-          body: '请先在「我的 → AI 模型配置」填写 API Key（需视觉模型）',
+          body: e.message,
+          success: false,
         );
       }
       return const [];
@@ -86,14 +124,22 @@ class AutoBillingService {
 
     final ready = await _waitFile(file);
     if (!ready) {
+      logger.warning('AutoBilling', '文件不可读 source=$source file=$fileName');
       if (showNotification) {
         await notifications.showResult(
           title: '文件不可用',
-          body: '截图尚未可读，请稍后在「选择截图识别」中重试。系统截图需自行清理。',
+          body: '截图尚未可读，请稍后通过记一笔扇形「图片」重试。',
+          success: false,
         );
       }
       return const [];
     }
+
+    logger.info(
+      'AutoBilling',
+      '开始识别 source=$source provider=${provider.name} '
+      'model=${provider.visionModel}',
+    );
 
     if (showNotification) {
       await notifications.showProgress(title: '正在识别', body: 'AI 分析账单中…');
@@ -108,10 +154,12 @@ class AutoBillingService {
       await _mark(imagePath);
 
       if (bills.isEmpty) {
+        logger.warning('AutoBilling', '非账单 source=$source file=$fileName');
         if (showNotification) {
           await notifications.showResult(
             title: '未识别到账单',
             body: '该图可能不是支付截图',
+            success: false,
           );
         }
         return const [];
@@ -124,8 +172,13 @@ class AutoBillingService {
 
       final ledgerId = await resolveLedgerId();
       if (ledgerId == null) {
+        logger.error('AutoBilling', '未找到账本 source=$source');
         if (showNotification) {
-          await notifications.showResult(title: '记账失败', body: '未找到账本');
+          await notifications.showResult(
+            title: '记账失败',
+            body: '未找到账本',
+            success: false,
+          );
         }
         return const [];
       }
@@ -136,20 +189,33 @@ class AutoBillingService {
         source: source,
       );
 
+      if (ids.isEmpty) {
+        logger.warning('AutoBilling', '保存失败 source=$source');
+      } else {
+        logger.info('AutoBilling', '自动入账 ${ids.length} 笔 source=$source');
+      }
+
       if (showNotification) {
         final total = bills.fold<double>(0, (a, b) => a + (b.amount ?? 0));
+        final ok = ids.isNotEmpty;
         await notifications.showResult(
-          title: ids.isEmpty ? '保存失败' : '自动记账成功',
-          body: ids.isEmpty
-              ? '请打开 App 手动确认'
-              : '已入账 ${ids.length} 笔，合计 ¥${total.toStringAsFixed(2)}',
+          title: ok ? '自动记账成功' : '保存失败',
+          body: ok
+              ? '已入账 ${ids.length} 笔，合计 ¥${total.toStringAsFixed(2)}'
+              : '请打开 App 手动确认',
+          success: ok,
         );
       }
       return ids;
-    } catch (e) {
+    } catch (e, st) {
+      logger.error('AutoBilling', '识别失败 source=$source', e, st);
       debugPrint('AutoBilling failed: $e');
       if (showNotification) {
-        await notifications.showResult(title: '识别失败', body: '$e');
+        await notifications.showResult(
+          title: '识别失败',
+          body: '$e',
+          success: false,
+        );
       }
       return const [];
     }

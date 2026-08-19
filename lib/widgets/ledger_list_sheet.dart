@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../providers/database_provider.dart';
 import '../providers/ledger_session_provider.dart';
 import '../styles/tokens.dart';
 
@@ -134,7 +135,15 @@ class LedgerListSheet extends ConsumerWidget {
   ) async {
     final name = await _askName(context, title: '新建账本', initial: '');
     if (name == null) return;
-    await notifier.create(name);
+    try {
+      await notifier.create(name);
+    } on StateError catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.message)),
+        );
+      }
+    }
   }
 
   Future<void> _promptRename(
@@ -146,9 +155,18 @@ class LedgerListSheet extends ConsumerWidget {
       context,
       title: '重命名账本',
       initial: item.name,
+      excludeId: item.id,
     );
     if (name == null) return;
-    await notifier.rename(item.id, name);
+    try {
+      await notifier.rename(item.id, name);
+    } on StateError catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.message)),
+        );
+      }
+    }
   }
 
   Future<void> _confirmDelete(
@@ -160,7 +178,10 @@ class LedgerListSheet extends ConsumerWidget {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('删除账本'),
-        content: Text('确定删除「${item.name}」及其账单？此操作不可恢复。'),
+        content: Text(
+          '确定删除「${item.name}」及其账单？'
+          '其它设备若还有未同步的记账，同步后可能恢复。',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -187,29 +208,98 @@ class LedgerListSheet extends ConsumerWidget {
     BuildContext context, {
     required String title,
     required String initial,
+    int? excludeId,
   }) {
-    final controller = TextEditingController(text: initial);
     return showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: '请输入账本名称'),
-          onSubmitted: (v) => Navigator.pop(ctx, v),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消'),
+      builder: (ctx) => _LedgerNameDialog(
+        title: title,
+        initial: initial,
+        excludeId: excludeId,
+      ),
+    );
+  }
+}
+
+class _LedgerNameDialog extends ConsumerStatefulWidget {
+  const _LedgerNameDialog({
+    required this.title,
+    required this.initial,
+    this.excludeId,
+  });
+
+  final String title;
+  final String initial;
+  final int? excludeId;
+
+  @override
+  ConsumerState<_LedgerNameDialog> createState() => _LedgerNameDialogState();
+}
+
+class _LedgerNameDialogState extends ConsumerState<_LedgerNameDialog> {
+  late final TextEditingController _controller;
+  bool _taken = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initial);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _recheck(String raw) async {
+    final taken = await ref.read(ledgerRepositoryProvider).nameTaken(
+          raw,
+          excludeId: widget.excludeId,
+        );
+    if (mounted) setState(() => _taken = taken);
+  }
+
+  void _submit() {
+    final text = _controller.text.trim();
+    if (text.isEmpty || _taken) return;
+    Navigator.pop(context, text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            decoration: const InputDecoration(hintText: '请输入账本名称'),
+            onChanged: _recheck,
+            onSubmitted: (_) => _submit(),
           ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, controller.text),
-            child: const Text('确定'),
-          ),
+          if (_taken) ...[
+            const SizedBox(height: 8),
+            const Text(
+              '已存在同名账本',
+              style: TextStyle(color: PigTokens.danger, fontSize: 13),
+            ),
+          ],
         ],
       ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        TextButton(
+          onPressed: _taken ? null : _submit,
+          child: const Text('确定'),
+        ),
+      ],
     );
   }
 }

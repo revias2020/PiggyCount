@@ -51,5 +51,10 @@ void main() {
     final cats = await db.select(db.categories).get();
     expect(cats.where((c) => c.kind == 'expense'), isNotEmpty);
     expect(cats.where((c) => c.kind == 'income'), isNotEmpty);
+
+    // ADR-039：出厂仅「支付/渠道」「额度」（onCreate），无空「默认」组
+    final groups = await db.select(db.tagGroups).get();
+    expect(groups.map((g) => g.name), containsAll(['支付/渠道', '额度']));
+    expect(groups.any((g) => g.name == '默认'), isFalse);
   });
 }

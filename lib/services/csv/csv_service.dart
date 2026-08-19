@@ -7,6 +7,9 @@ import '../../data/repositories/category_repository.dart';
 import '../../data/repositories/ledger_repository.dart';
 import '../../data/repositories/tag_repository.dart';
 import '../../data/repositories/transaction_repository.dart';
+import 'csv_codec.dart';
+import 'csv_import_mapping.dart';
+import 'csv_table.dart';
 
 /// CSV 列：日期时间,类型,金额,主分类,子分类,标签,备注,账本名
 class CsvService {
@@ -53,21 +56,21 @@ class CsvService {
       final typeLabel = tx.type == 'income' ? '收入' : '支出';
       buf.writeln(
         [
-          _cell(fmt.format(tx.happenedAt)),
-          _cell(typeLabel),
-          _cell(tx.amount.toStringAsFixed(2)),
-          _cell(primary),
-          _cell(secondary),
-          _cell(item.tagNames.join('|')),
-          _cell(tx.note ?? ''),
-          _cell(ledgerName[tx.ledgerId] ?? ''),
+          CsvCodec.cell(fmt.format(tx.happenedAt)),
+          CsvCodec.cell(typeLabel),
+          CsvCodec.cell(tx.amount.toStringAsFixed(2)),
+          CsvCodec.cell(primary),
+          CsvCodec.cell(secondary),
+          CsvCodec.cell(item.tagNames.join('|')),
+          CsvCodec.cell(tx.note ?? ''),
+          CsvCodec.cell(ledgerName[tx.ledgerId] ?? ''),
         ].join(','),
       );
     }
     return buf.toString();
   }
 
-  /// 导入；分类/标签不存在时创建；账本按名匹配或创建。
+  /// 云下载等：按列位置导入（兼容旧扁平「分类」列）。不走导入映射向导。
   Future<int> importCsv(String raw, {int? defaultLedgerId}) async {
     final text = raw.startsWith('\uFEFF') ? raw.substring(1) : raw;
     final lines = const LineSplitter().convert(text);
@@ -78,7 +81,6 @@ class CsvService {
     if (lines.first.contains('日期') ||
         lines.first.toLowerCase().contains('time')) {
       final h = lines.first;
-      // 旧扁平导出只有一列「分类」
       singleCategoryCol = h.contains(',分类,') &&
           !h.contains('主分类') &&
           !h.contains('一级分类') &&
@@ -96,15 +98,12 @@ class CsvService {
     for (var i = start; i < lines.length; i++) {
       final line = lines[i].trim();
       if (line.isEmpty) continue;
-      final cols = _parseRow(line);
+      final cols = CsvCodec.parseRow(line);
       if (cols.length < 3) continue;
 
-      final happenedAt = _parseDate(cols[0]) ?? DateTime.now();
-      final type = _parseType(cols.length > 1 ? cols[1] : '支出');
-      final amount = double.tryParse(
-            (cols.length > 2 ? cols[2] : '').replaceAll(',', ''),
-          ) ??
-          0;
+      final happenedAt = CsvCodec.parseDate(cols[0]) ?? DateTime.now();
+      final type = CsvCodec.parseType(cols.length > 1 ? cols[1] : '支出');
+      final amount = CsvCodec.parseAmount(cols.length > 2 ? cols[2] : '') ?? 0;
       if (amount <= 0) continue;
 
       late final String primary;
@@ -145,29 +144,155 @@ class CsvService {
 
       final tagIds = <int>[];
       if (tagPart.isNotEmpty) {
-        for (final name in tagPart.split(RegExp(r'[|｜、,，;；]'))) {
-          final n = name.trim();
-          if (n.isEmpty) continue;
+        for (final n in CsvCodec.splitTags(tagPart)) {
           var id = tagByName[n];
           if (id == null) {
-            id = await tags.create(n); // 落入「默认」字符串组
+            id = await tags.create(n);
             tagByName[n] = id;
           }
           tagIds.add(id);
         }
       }
 
-      await transactions.insert(
-        ledgerId: ledgerId,
-        type: type,
-        amount: amount.abs(),
-        categoryId: categoryId,
-        happenedAt: happenedAt,
-        note: note.isEmpty ? null : note,
-        tagIds: tagIds,
-        source: 'manual',
-      );
-      imported++;
+        try {
+          await transactions.insert(
+            ledgerId: ledgerId,
+            type: type,
+            amount: amount.abs(),
+            categoryId: categoryId,
+            happenedAt: happenedAt,
+            note: note.isEmpty ? null : note,
+            tagIds: tagIds,
+            source: 'manual',
+          );
+          imported++;
+        } on StateError catch (e) {
+          if (!e.message.contains('已存在相同')) rethrow;
+        }
+    }
+    return imported;
+  }
+
+  /// 导入映射向导确认后的写入。日期/金额解析失败的行跳过，不用「此刻」。
+  Future<int> importMapped({
+    required CsvTable table,
+    required ColumnMapping columns,
+    required int defaultLedgerId,
+    Map<CategoryMapKey, int?> categoryMap = const {},
+    Map<String, int?> tagMap = const {},
+    void Function(int current, int total)? onProgress,
+  }) async {
+    final total = table.rows.length;
+    onProgress?.call(0, total == 0 ? 1 : total);
+    if (total == 0) return 0;
+
+    final allLedgers = await ledgers.getAll();
+    final ledgerByName = {for (final l in allLedgers) l.name: l.id};
+    final allTags = await tags.getAll();
+    final tagByName = {for (final t in allTags) t.name: t.id};
+    final bundles = await tags.getBundles();
+    final tagScope = <int, String>{
+      for (final b in bundles)
+        for (final t in b.tags) t.id: b.group.scope,
+    };
+
+    var imported = 0;
+    for (var i = 0; i < table.rows.length; i++) {
+      final row = table.rows[i];
+      try {
+        final dateRaw =
+            CsvImportMapping.cell(table, row, columns, CsvImportField.happenedAt);
+        final amountRaw =
+            CsvImportMapping.cell(table, row, columns, CsvImportField.amount);
+        final happenedAt = CsvCodec.parseDate(dateRaw);
+        final amount = CsvCodec.parseAmount(amountRaw);
+        if (happenedAt == null || amount == null || amount <= 0) {
+          continue;
+        }
+
+        final typeRaw =
+            CsvImportMapping.cell(table, row, columns, CsvImportField.type);
+        final type =
+            typeRaw.isEmpty ? 'expense' : CsvCodec.parseType(typeRaw);
+        final primary = CsvImportMapping.cell(
+          table,
+          row,
+          columns,
+          CsvImportField.primaryCategory,
+        );
+        final secondary = CsvImportMapping.cell(
+          table,
+          row,
+          columns,
+          CsvImportField.secondaryCategory,
+        );
+        final tagPart =
+            CsvImportMapping.cell(table, row, columns, CsvImportField.tags);
+        final note =
+            CsvImportMapping.cell(table, row, columns, CsvImportField.note);
+        final ledgerNameStr =
+            CsvImportMapping.cell(table, row, columns, CsvImportField.ledgerName);
+
+        var ledgerId = defaultLedgerId;
+        if (ledgerNameStr.isNotEmpty) {
+          ledgerId = ledgerByName[ledgerNameStr] ??
+              await ledgers.create(ledgerNameStr, select: false);
+          ledgerByName[ledgerNameStr] = ledgerId;
+        }
+
+        final catKey = CategoryMapKey(
+          kind: type,
+          primary: primary,
+          secondary: secondary,
+        );
+        // 三态：无键=自动；键且 null=不映射（未分类）；键且 id=对到该分类（ADR-043）。
+        int? categoryId;
+        if (categoryMap.containsKey(catKey)) {
+          categoryId = categoryMap[catKey];
+        } else {
+          categoryId = await _resolveCategory(
+            kind: type,
+            primary: primary,
+            secondary: secondary,
+          );
+        }
+
+        final tagIds = <int>[];
+        for (final n in CsvCodec.splitTags(tagPart)) {
+          // 三态：无键=自动；键且 null=不映射（忽略该名）；键且 id=对到该标签（ADR-043）。
+          late final int id;
+          if (tagMap.containsKey(n)) {
+            final mapped = tagMap[n];
+            if (mapped == null) continue;
+            id = mapped;
+          } else {
+            id = tagByName[n] ?? await tags.create(n);
+            tagByName[n] = id;
+            tagScope.putIfAbsent(id, () => TagGroupScope.both);
+          }
+          final scope = tagScope[id] ?? TagGroupScope.both;
+          if (!TagGroupScope.matchesType(scope, type)) continue;
+          tagIds.add(id);
+        }
+
+        try {
+          await transactions.insert(
+            ledgerId: ledgerId,
+            type: type,
+            amount: amount.abs(),
+            categoryId: categoryId,
+            happenedAt: happenedAt,
+            note: note.isEmpty ? null : note,
+            tagIds: tagIds,
+            source: 'manual',
+          );
+          imported++;
+        } on StateError catch (e) {
+          if (!e.message.contains('已存在相同')) rethrow;
+        }
+      } finally {
+        onProgress?.call(i + 1, total);
+      }
     }
     return imported;
   }
@@ -187,23 +312,21 @@ class CsvService {
     if (primary.isEmpty && secondary.isEmpty) return null;
 
     if (secondary.isNotEmpty) {
-      final child = list.where(
-        (c) => c.name == secondary && c.parentId != null,
-      );
-      if (child.isNotEmpty) {
-        if (primary.isEmpty) return child.first.id;
-        final parentOk = list.any(
-          (c) => c.id == child.first.parentId && c.name == primary,
-        );
-        if (parentOk || primary.isEmpty) return child.first.id;
+      Category? byName(String n) {
+        final hits = list.where((c) => c.name == n);
+        return hits.isEmpty ? null : hits.first;
       }
+
+      final existingLeaf = byName(secondary);
+      if (existingLeaf != null) return existingLeaf.id;
       int? parentId;
       if (primary.isNotEmpty) {
-        final parents =
-            list.where((c) => c.name == primary && c.parentId == null);
-        parentId = parents.isEmpty
-            ? await categories.create(name: primary, kind: kind)
-            : parents.first.id;
+        final parent = byName(primary);
+        if (parent == null) {
+          parentId = await categories.create(name: primary, kind: kind);
+        } else if (parent.parentId == null) {
+          parentId = parent.id;
+        }
       }
       return categories.create(
         name: secondary,
@@ -218,67 +341,5 @@ class CsvService {
       return categories.create(name: primary, kind: kind);
     }
     return null;
-  }
-
-  String _cell(String value) {
-    final needsQuote =
-        value.contains(',') || value.contains('"') || value.contains('\n');
-    final escaped = value.replaceAll('"', '""');
-    return needsQuote ? '"$escaped"' : escaped;
-  }
-
-  List<String> _parseRow(String line) {
-    final result = <String>[];
-    final buf = StringBuffer();
-    var inQuotes = false;
-    for (var i = 0; i < line.length; i++) {
-      final c = line[i];
-      if (inQuotes) {
-        if (c == '"') {
-          if (i + 1 < line.length && line[i + 1] == '"') {
-            buf.write('"');
-            i++;
-          } else {
-            inQuotes = false;
-          }
-        } else {
-          buf.write(c);
-        }
-      } else if (c == '"') {
-        inQuotes = true;
-      } else if (c == ',') {
-        result.add(buf.toString());
-        buf.clear();
-      } else {
-        buf.write(c);
-      }
-    }
-    result.add(buf.toString());
-    return result;
-  }
-
-  DateTime? _parseDate(String raw) {
-    final s = raw.trim();
-    if (s.isEmpty) return null;
-    final tryFormats = [
-      DateFormat('yyyy-MM-dd HH:mm:ss'),
-      DateFormat('yyyy/MM/dd HH:mm:ss'),
-      DateFormat('yyyy-MM-dd'),
-      DateFormat('yyyy/MM/dd'),
-    ];
-    for (final f in tryFormats) {
-      try {
-        return f.parse(s);
-      } catch (_) {}
-    }
-    return DateTime.tryParse(s);
-  }
-
-  String _parseType(String raw) {
-    final s = raw.trim();
-    if (s.contains('收') || s.toLowerCase().contains('income')) {
-      return 'income';
-    }
-    return 'expense';
   }
 }

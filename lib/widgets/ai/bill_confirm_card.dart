@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
 import '../../ai/bill_info.dart';
 import '../../styles/tokens.dart';
 import '../../utils/money_format.dart';
+import 'bill_display.dart';
 
 /// 待确认账单卡片：用户确认后才落库。
 class BillConfirmCard extends StatelessWidget {
@@ -22,10 +22,8 @@ class BillConfirmCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isExpense = bill.type != BillType.income;
-    final time = bill.time == null
-        ? ''
-        : DateFormat('M月d日 HH:mm').format(bill.time!);
+    final isExpense = billIsExpense(bill);
+    final time = formatBillTime(bill);
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 6),
       padding: const EdgeInsets.all(14),
@@ -96,9 +94,7 @@ class BillConfirmCard extends StatelessWidget {
                 for (final t in bill.tags!)
                   Chip(
                     label: Text(
-                      t.groupName == null || t.groupName!.isEmpty
-                          ? t.name
-                          : '${t.groupName}/${t.name}',
+                      formatBillTagLabel(t),
                       style: const TextStyle(fontSize: 12),
                     ),
                     visualDensity: VisualDensity.compact,

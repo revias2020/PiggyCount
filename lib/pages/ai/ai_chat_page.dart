@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../ai/ai_provider_config.dart';
 import '../../ai/bill_info.dart';
 import '../../providers/ai_providers.dart';
 import '../../providers/ledger_session_provider.dart';
+import '../../services/system/logger_service.dart';
 import '../../styles/tokens.dart';
+import '../../widgets/ai/ai_setup_helpers.dart';
 import '../../widgets/ai/bill_confirm_card.dart';
-import 'ai_settings_page.dart';
 
 /// AI 账单助手（fig5）：空态 + 快捷 Chip + 对话/确认记账 + 语音输入。
 class AiChatPage extends ConsumerStatefulWidget {
@@ -69,22 +71,14 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     final text = raw.trim();
     if (text.isEmpty || _sending) return;
 
-    final cfg = await ref.read(aiConfigStoreProvider).load();
-    if (!cfg.isConfigured) {
+    try {
+      await ref
+          .read(aiProviderStoreProvider)
+          .resolve(AiCapabilityKind.text);
+    } on AiCapabilityNotReadyException catch (e) {
+      logger.warning('AiChat', '能力未就绪: ${e.message}');
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('请先配置 AI API Key'),
-          action: SnackBarAction(
-            label: '去配置',
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const AiSettingsPage()),
-              );
-            },
-          ),
-        ),
-      );
+      showAiSetupSnackBar(context, e.message);
       return;
     }
 
@@ -104,22 +98,34 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     });
     _scrollToEnd();
 
-    final reply = await ref.read(aiChatServiceProvider).processMessage(
-          text,
-          ledgerId: ledgerId,
-          forceAnalysis: forceAnalysis,
-        );
+    try {
+      final reply = await ref.read(aiChatServiceProvider).processMessage(
+            text,
+            ledgerId: ledgerId,
+            forceAnalysis: forceAnalysis,
+          );
 
-    if (!mounted) return;
-    setState(() {
-      _sending = false;
-      if (reply.isBills) {
-        _messages.add(_ChatItem.bills(reply.pendingBills));
-      } else {
-        _messages.add(_ChatItem.text(isUser: false, text: reply.text ?? ''));
-      }
-    });
-    _scrollToEnd();
+      if (!mounted) return;
+      setState(() {
+        _sending = false;
+        if (reply.isBills) {
+          _messages.add(_ChatItem.bills(reply.pendingBills));
+        } else {
+          _messages.add(_ChatItem.text(isUser: false, text: reply.text ?? ''));
+        }
+      });
+      _scrollToEnd();
+    } catch (e, st) {
+      logger.error('AiChat', '对话处理失败', e, st);
+      if (!mounted) return;
+      setState(() {
+        _sending = false;
+        _messages.add(
+          _ChatItem.text(isUser: false, text: '出错了：$e'),
+        );
+      });
+      _scrollToEnd();
+    }
   }
 
   Future<void> _confirmBill(_ChatItem item, BillInfo bill) async {
@@ -143,7 +149,8 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
           ),
         );
       });
-    } catch (e) {
+    } catch (e, st) {
+      logger.error('AiChat', '确认入账失败', e, st);
       if (!mounted) return;
       setState(() => _confirming.remove(item.id));
       ScaffoldMessenger.of(context).showSnackBar(
@@ -213,13 +220,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
             children: [
               _Header(
                 onBack: () => Navigator.of(context).pop(),
-                onSettings: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const AiSettingsPage(),
-                    ),
-                  );
-                },
+                onSettings: () => openAiSettings(context),
               ),
               Expanded(
                 child: empty
@@ -351,10 +352,13 @@ class _EmptyBody extends StatelessWidget {
                 ),
               ],
             ),
-            child: const Icon(
-              Icons.smart_toy_outlined,
-              color: PigTokens.textOnPrimary,
-              size: 36,
+            child: const Center(
+              child: Image(
+                image: AssetImage('assets/icons/ai_assistant.png'),
+                width: 36,
+                height: 36,
+                color: PigTokens.textOnPrimary,
+              ),
             ),
           ),
         ),

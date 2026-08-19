@@ -1,6 +1,9 @@
 package com.xiaozhu.piggy_count
 
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -14,7 +17,7 @@ import java.io.File
 /**
  * 主 Activity：截图 MediaStore 监听 + 系统分享图片入账。
  *
- * launchMode=singleTask，保证热启动分享走 [onNewIntent]。
+ * launchMode=singleTask，保证热启动分享 / 小组件深链走 [onNewIntent]（ADR-027）。
  */
 class MainActivity : FlutterFragmentActivity() {
     companion object {
@@ -26,6 +29,7 @@ class MainActivity : FlutterFragmentActivity() {
     private var screenshotObserver: ScreenshotObserver? = null
     private var pendingSharedPath: String? = null
     private var flutterEngineRef: FlutterEngine? = null
+    private var widgetRefreshReceiver: BroadcastReceiver? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -68,6 +72,11 @@ class MainActivity : FlutterFragmentActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        // Dart 侧挂好 handler 即可；原生只负责推送 onWidgetRefresh。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, WidgetRefreshBridge.CHANNEL)
+
+        registerWidgetRefreshReceiver()
 
         // 若冷启动时已拷好分享图，延迟通知 Dart
         pendingSharedPath?.let { path ->
@@ -123,6 +132,43 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
+    private fun registerWidgetRefreshReceiver() {
+        if (widgetRefreshReceiver != null) return
+        widgetRefreshReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != WidgetRefreshBridge.ACTION_REFRESH) return
+                notifyWidgetRefresh()
+            }
+        }
+        val filter = IntentFilter(WidgetRefreshBridge.ACTION_REFRESH)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(widgetRefreshReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(widgetRefreshReceiver, filter)
+        }
+    }
+
+    private fun unregisterWidgetRefreshReceiver() {
+        widgetRefreshReceiver?.let {
+            try {
+                unregisterReceiver(it)
+            } catch (_: Exception) {
+            }
+            widgetRefreshReceiver = null
+        }
+    }
+
+    private fun notifyWidgetRefresh() {
+        try {
+            val messenger = flutterEngineRef?.dartExecutor?.binaryMessenger ?: return
+            MethodChannel(messenger, WidgetRefreshBridge.CHANNEL)
+                .invokeMethod("onWidgetRefresh", null)
+        } catch (e: Exception) {
+            Log.e(TAG, "notifyWidgetRefresh failed", e)
+        }
+    }
+
     private fun startScreenshotObserver(engine: FlutterEngine) {
         stopScreenshotObserver()
         screenshotObserver = ScreenshotObserver(this) { path ->
@@ -149,6 +195,7 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun onDestroy() {
+        unregisterWidgetRefreshReceiver()
         stopScreenshotObserver()
         flutterEngineRef = null
         super.onDestroy()

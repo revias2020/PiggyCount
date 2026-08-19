@@ -7,6 +7,7 @@ import 'package:piggy_count/data/repositories/tag_repository.dart';
 import 'package:piggy_count/data/repositories/transaction_repository.dart';
 import 'package:piggy_count/data/seed_service.dart';
 import 'package:piggy_count/services/csv/csv_service.dart';
+import 'package:piggy_count/utils/bill_fingerprint.dart';
 
 void main() {
   late AppDatabase db;
@@ -27,13 +28,20 @@ void main() {
 
     final cats = await db.select(db.categories).get();
     final expense = cats.firstWhere((c) => c.kind == 'expense');
+    final happenedAt = DateTime(2026, 8, 1, 10);
+    final ledger = (await ledgers.getAll()).first;
     await db.into(db.transactions).insert(
           TransactionsCompanion.insert(
             ledgerId: ledgerId,
             type: 'expense',
             amount: 12.5,
-            happenedAt: DateTime(2026, 8, 1, 10),
+            happenedAt: happenedAt,
             syncId: 'csv-t1',
+            fingerprint: BillFingerprint.build(
+              ledgerSyncId: ledger.syncId,
+              amount: 12.5,
+              happenedAt: happenedAt,
+            ),
             categoryId: Value(expense.id),
             note: Value('测试'),
           ),

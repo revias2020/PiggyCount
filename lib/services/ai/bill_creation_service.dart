@@ -42,6 +42,7 @@ class BillCreationService {
           AiTagGroupHint(
             name: b.group.name,
             kind: b.group.kind,
+            scope: b.group.scope,
             tags: [
               for (final t in b.tags)
                 AiTagHint(
@@ -85,6 +86,7 @@ class BillCreationService {
     final tagIds = await _resolveTagIds(
       suggestions: bill.tags,
       amount: amount,
+      type: type,
     );
 
     return transactions.insert(
@@ -127,12 +129,15 @@ class BillCreationService {
   Future<List<int>> _resolveTagIds({
     required List<SuggestedTag>? suggestions,
     required double amount,
+    required String type,
   }) async {
     final allowCreate = await settings.autoGenerateTags();
     final bundles = await tags.getBundles();
     final selected = <int>[];
 
     for (final bundle in bundles) {
+      if (!TagGroupScope.matchesType(bundle.group.scope, type)) continue;
+
       if (bundle.isNumber) {
         for (final t in bundle.tags) {
           if (TagRepository.amountInRange(amount, t)) {
@@ -164,7 +169,6 @@ class BillCreationService {
         try {
           final id = await tags.create(name, groupId: bundle.group.id);
           picked.add(id);
-          // 刷新本 bundle 视图用不到：后续同组建议走 create 的 byName 即可
         } catch (_) {
           // 重名或校验失败则跳过
         }

@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../ai/ai_provider_config.dart';
 import '../../ai/bill_info.dart';
 import '../../providers/ai_providers.dart';
 import '../../providers/ledger_session_provider.dart';
+import '../../services/system/logger_service.dart';
 import '../../styles/tokens.dart';
+import '../../widgets/ai/ai_setup_helpers.dart';
 import '../../widgets/ai/bill_confirm_card.dart';
-import '../ai/ai_settings_page.dart';
 
 /// 语音记账确认流：系统 ASR → AI 结构化 → 用户确认落库。
 Future<void> showVoiceBillingSheet(BuildContext context) {
@@ -51,11 +53,14 @@ class _VoiceBillingSheetState extends ConsumerState<_VoiceBillingSheet> {
   }
 
   Future<void> _startListen() async {
-    final cfg = await ref.read(aiConfigStoreProvider).load();
-    if (!cfg.isConfigured) {
-      setState(() {
-        _error = '请先配置 AI API Key';
-      });
+    try {
+      await ref
+          .read(aiProviderStoreProvider)
+          .resolve(AiCapabilityKind.text);
+    } on AiCapabilityNotReadyException catch (e) {
+      logger.warning('VoiceBilling', '能力未就绪: ${e.message}');
+      setState(() => _error = e.message);
+      if (mounted) showAiSetupSnackBar(context, e.message);
       return;
     }
     try {
@@ -69,7 +74,8 @@ class _VoiceBillingSheetState extends ConsumerState<_VoiceBillingSheet> {
               setState(() => _transcript = t);
             },
           );
-    } catch (e) {
+    } catch (e, st) {
+      logger.error('VoiceBilling', 'ASR 启动失败', e, st);
       setState(() {
         _listening = false;
         _error = '$e';
@@ -101,7 +107,8 @@ class _VoiceBillingSheetState extends ConsumerState<_VoiceBillingSheet> {
           _error = '未能识别为账单，请再说一次金额与用途';
         }
       });
-    } catch (e) {
+    } catch (e, st) {
+      logger.error('VoiceBilling', '文本结构化失败', e, st);
       setState(() {
         _extracting = false;
         _error = '识别失败：$e';
@@ -176,17 +183,7 @@ class _VoiceBillingSheetState extends ConsumerState<_VoiceBillingSheet> {
           if (_error != null) ...[
             const SizedBox(height: 8),
             Text(_error!, style: const TextStyle(color: PigTokens.danger)),
-            if (_error!.contains('API Key'))
-              TextButton(
-                onPressed: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const AiSettingsPage(),
-                    ),
-                  );
-                },
-                child: const Text('去配置'),
-              ),
+            ?aiSetupTextButton(context, _error),
           ],
           for (final b in _bills)
             BillConfirmCard(

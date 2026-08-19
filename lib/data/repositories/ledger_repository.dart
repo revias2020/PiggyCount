@@ -1,6 +1,7 @@
 import 'package:drift/drift.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../utils/happened_at.dart';
 import '../app_database.dart';
 
 /// 账本读写。
@@ -12,13 +13,36 @@ class LedgerRepository {
   static const currentLedgerKey = 'current_ledger_id';
 
   Stream<List<Ledger>> watchAll() {
-    return (_db.select(_db.ledgers)..orderBy([(t) => OrderingTerm.asc(t.id)]))
+    return (_db.select(_db.ledgers)
+          ..where((t) => t.deletedAt.isNull())
+          ..orderBy([(t) => OrderingTerm.asc(t.id)]))
         .watch();
   }
 
   Future<List<Ledger>> getAll() {
-    return (_db.select(_db.ledgers)..orderBy([(t) => OrderingTerm.asc(t.id)]))
+    return (_db.select(_db.ledgers)
+          ..where((t) => t.deletedAt.isNull())
+          ..orderBy([(t) => OrderingTerm.asc(t.id)]))
         .get();
+  }
+
+  Future<Ledger?> getById(int id) {
+    return (_db.select(_db.ledgers)
+          ..where((t) => t.id.equals(id))
+          ..where((t) => t.deletedAt.isNull()))
+        .getSingleOrNull();
+  }
+
+  /// 未删除账本中是否已有同名（[excludeId] 改名时排除自身）。
+  Future<bool> nameTaken(String name, {int? excludeId}) async {
+    final trimmed = name.trim();
+    final q = _db.select(_db.ledgers)
+      ..where((t) => t.name.equals(trimmed))
+      ..where((t) => t.deletedAt.isNull());
+    if (excludeId != null) {
+      q.where((t) => t.id.isNotValue(excludeId));
+    }
+    return (await q.get()).isNotEmpty;
   }
 
   Future<int?> readCurrentLedgerId() async {
@@ -39,10 +63,19 @@ class LedgerRepository {
   }
 
   Future<int> create(String name, {bool select = true}) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      throw ArgumentError('账本名称不能为空');
+    }
+    if (await nameTaken(trimmed)) {
+      throw StateError('已存在同名账本');
+    }
+    final now = HappenedAt.now();
     final id = await _db.into(_db.ledgers).insert(
           LedgersCompanion.insert(
-            name: name.trim(),
+            name: trimmed,
             syncId: _uuid.v4(),
+            updatedAt: Value(now),
           ),
         );
     if (select) {
@@ -52,35 +85,50 @@ class LedgerRepository {
   }
 
   Future<void> rename(int id, String name) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      throw ArgumentError('账本名称不能为空');
+    }
+    if (await nameTaken(trimmed, excludeId: id)) {
+      throw StateError('已存在同名账本');
+    }
+    final now = HappenedAt.now();
     await (_db.update(_db.ledgers)..where((t) => t.id.equals(id))).write(
-          LedgersCompanion(name: Value(name.trim())),
+          LedgersCompanion(
+            name: Value(trimmed),
+            updatedAt: Value(now),
+          ),
         );
   }
 
-  /// 删除账本及其账单/标签关联；至少保留一本时返回 false。
+  /// 软删账本及其账单；至少保留一本时返回 false。
   Future<bool> delete(int id) async {
     final all = await getAll();
     if (all.length <= 1) return false;
 
+    final now = HappenedAt.now();
     await _db.transaction(() async {
-      final txs = await (_db.select(_db.transactions)
-            ..where((t) => t.ledgerId.equals(id)))
-          .get();
-      final txIds = txs.map((e) => e.id).toList();
-      if (txIds.isNotEmpty) {
-        await (_db.delete(_db.transactionTags)
-              ..where((t) => t.transactionId.isIn(txIds)))
-            .go();
-        await (_db.delete(_db.transactions)..where((t) => t.ledgerId.equals(id)))
-            .go();
-      }
-      await (_db.delete(_db.ledgers)..where((t) => t.id.equals(id))).go();
+      await (_db.update(_db.transactions)..where((t) => t.ledgerId.equals(id)))
+          .write(
+        TransactionsCompanion(
+          deletedAt: Value(now),
+          updatedAt: Value(now),
+        ),
+      );
+      await (_db.update(_db.ledgers)..where((t) => t.id.equals(id))).write(
+            LedgersCompanion(
+              deletedAt: Value(now),
+              updatedAt: Value(now),
+            ),
+          );
     });
 
     final current = await readCurrentLedgerId();
     if (current == id) {
-      final next = (await getAll()).first;
-      await setCurrentLedgerId(next.id);
+      final rest = await getAll();
+      if (rest.isNotEmpty) {
+        await setCurrentLedgerId(rest.first.id);
+      }
     }
     return true;
   }

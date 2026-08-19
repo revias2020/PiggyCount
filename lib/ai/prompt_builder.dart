@@ -33,6 +33,8 @@ class PromptBuilder {
 5. category: 从分类列表选择最贴近的名称
 6. tags: 可选。字符串组：只选语义相关的已有标签，每组最多 2 个；不相关的组不要选。新标签仅当需要创建时用 {"group":"已有字符串组名","name":"新标签"}；数值组不要填（系统按金额自动落档）。
 
+注意：**如果输入中存在多个时间，请优先采用账单的支付时间作为time**
+
 示例：
 "昨天中午跟同事吃饭280，晚上买黑色冲锋衣450" → [{"amount":280,"type":"expense","time":"{{CURRENT_DATE}}T12:00:00","note":"跟同事聚餐","category":"餐饮"},{"amount":450,"type":"expense","time":"{{CURRENT_DATE}}T19:00:00","note":"黑色冲锋衣","category":"购物"}]
 "发工资8000" → [{"amount":8000,"type":"income","time":"{{CURRENT_TIME}}","note":"工资","category":"工资"}]
@@ -62,7 +64,7 @@ class PromptBuilder {
     final ts = now ?? DateTime.now();
     final currentDate = '${ts.year}-${_pad(ts.month)}-${_pad(ts.day)}';
     final currentTime =
-        '${currentDate}T${_pad(ts.hour)}:${_pad(ts.minute)}:00';
+        '${currentDate}T${_pad(ts.hour)}:${_pad(ts.minute)}:${_pad(ts.second)}';
 
     return defaultTemplate
         .replaceAll('{{BILL_GUARD}}', billGuard)
@@ -93,10 +95,17 @@ class PromptBuilder {
     final lines = <String>['标签组（按组选择；数值组勿手填）：'];
     for (final g in ctx.tagGroups) {
       final kindLabel = g.kind == 'number' ? '数值组' : '字符串组';
+      final scopeLabel = switch (g.scope) {
+        'expense' => '仅支出',
+        'income' => '仅收入',
+        _ => '全部',
+      };
       if (g.tags.isEmpty) {
-        lines.add('- $kindLabel「${g.name}」：（空）');
+        lines.add('- $kindLabel「${g.name}」[$scopeLabel]：（空）');
       } else {
-        lines.add('- $kindLabel「${g.name}」：${g.tagLabels.join('、')}');
+        lines.add(
+          '- $kindLabel「${g.name}」[$scopeLabel]：${g.tagLabels.join('、')}',
+        );
       }
     }
     return lines.join('\n');

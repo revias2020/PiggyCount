@@ -117,13 +117,19 @@ class CategoryCsvService {
     List<int> bytes, {
     required String fileName,
     required String mode,
+    void Function(int current, int total)? onProgress,
   }) async {
     final lower = fileName.toLowerCase();
     if (lower.endsWith('.zip')) {
-      return importZip(bytes, mode: mode);
+      return importZip(bytes, mode: mode, onProgress: onProgress);
     }
     final text = utf8.decode(bytes, allowMalformed: true);
-    return importText(text, fileName: fileName, mode: mode);
+    return importText(
+      text,
+      fileName: fileName,
+      mode: mode,
+      onProgress: onProgress,
+    );
   }
 
   Future<CategoryImportResult> importText(
@@ -131,6 +137,7 @@ class CategoryCsvService {
     String fileName = '',
     required String mode,
     Map<String, String> iconPathMap = const {},
+    void Function(int current, int total)? onProgress,
   }) async {
     final text = raw.startsWith('\uFEFF') ? raw.substring(1) : raw.trimLeft();
     final lower = fileName.toLowerCase();
@@ -140,13 +147,19 @@ class CategoryCsvService {
         (text.contains('categories:') && text.contains('version:'));
 
     final items = looksYaml ? _parseYamlItems(text) : _parseCsvItems(text);
-    return _importItems(items, mode: mode, iconPathMap: iconPathMap);
+    return _importItems(
+      items,
+      mode: mode,
+      iconPathMap: iconPathMap,
+      onProgress: onProgress,
+    );
   }
 
   /// 导入本应用或 BeeCount 分类 zip。
   Future<CategoryImportResult> importZip(
     List<int> bytes, {
     required String mode,
+    void Function(int current, int total)? onProgress,
   }) async {
     final archive = ZipDecoder().decodeBytes(bytes);
 
@@ -174,6 +187,7 @@ class CategoryCsvService {
         fileName: 'categories.csv',
         mode: mode,
         iconPathMap: iconMap,
+        onProgress: onProgress,
       );
     }
 
@@ -195,6 +209,7 @@ class CategoryCsvService {
       fileName: 'categories.yaml',
       mode: mode,
       iconPathMap: iconMap,
+      onProgress: onProgress,
     );
   }
 
@@ -202,14 +217,18 @@ class CategoryCsvService {
   Future<CategoryImportResult> importBeeCountZip(
     List<int> bytes, {
     required String mode,
+    void Function(int current, int total)? onProgress,
   }) =>
-      importZip(bytes, mode: mode);
+      importZip(bytes, mode: mode, onProgress: onProgress);
 
   Future<CategoryImportResult> _importItems(
     List<_CategoryImportItem> items, {
     required String mode,
     Map<String, String> iconPathMap = const {},
+    void Function(int current, int total)? onProgress,
   }) async {
+    final total = items.isEmpty ? 1 : items.length;
+    onProgress?.call(0, total);
     if (mode == 'overwrite') {
       await _categories.clearUnused();
     }
@@ -254,10 +273,17 @@ class CategoryCsvService {
       return (iconType: 'material', customPath: null, icons: 0);
     }
 
+    var processed = 0;
+    void tick() {
+      processed++;
+      onProgress?.call(processed, total);
+    }
+
     for (final item in level1) {
       final k = _key(item.name, item.kind);
       if (existingKeys.contains(k)) {
         skipped++;
+        tick();
         continue;
       }
       final icon = await resolveIcon(item);
@@ -272,6 +298,7 @@ class CategoryCsvService {
       existingKeys.add(k);
       imported++;
       iconsImported += icon.icons;
+      tick();
     }
 
     final updated = await _categories.listAll();
@@ -283,6 +310,7 @@ class CategoryCsvService {
       final k = _key(item.name, item.kind);
       if (existingKeys.contains(k)) {
         skipped++;
+        tick();
         continue;
       }
       final parentName = item.parentName?.trim() ?? '';
@@ -290,6 +318,7 @@ class CategoryCsvService {
           parentName.isEmpty ? null : keyToId[_key(parentName, item.kind)];
       if (parentId == null) {
         skipped++;
+        tick();
         continue;
       }
       final icon = await resolveIcon(item);
@@ -305,8 +334,10 @@ class CategoryCsvService {
       existingKeys.add(k);
       imported++;
       iconsImported += icon.icons;
+      tick();
     }
 
+    if (processed < total) onProgress?.call(total, total);
     return CategoryImportResult(
       imported: imported,
       skipped: skipped,

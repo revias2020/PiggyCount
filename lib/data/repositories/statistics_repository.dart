@@ -9,13 +9,24 @@ class CompositionSlice {
     required this.id,
     required this.name,
     this.icon,
+    this.iconType = 'material',
+    this.customIconPath,
+    this.color,
     required this.total,
+    this.txCount = 0,
   });
 
   final int? id;
   final String name;
   final String? icon;
+  /// 与分类管理一致：`material` / `custom`（ADR-037）。
+  final String iconType;
+  final String? customIconPath;
+  /// 标签维：标签色 hex；分类维一般为空。
+  final String? color;
   final double total;
+  /// 该切片对应笔数（ADR-033 构成分类列表）。
+  final int txCount;
 }
 
 /// 趋势折线 / 对比柱状的一个点。
@@ -32,6 +43,13 @@ class SeriesPoint {
 }
 
 /// 单笔排行行。
+class RankTagLabel {
+  const RankTagLabel({required this.name, this.color});
+
+  final String name;
+  final String? color;
+}
+
 class RankedTransaction {
   const RankedTransaction({
     required this.id,
@@ -39,7 +57,10 @@ class RankedTransaction {
     required this.happenedAt,
     this.categoryName,
     this.categoryIcon,
+    this.categoryIconType = 'material',
+    this.categoryCustomIconPath,
     this.note,
+    this.tags = const [],
   });
 
   final int id;
@@ -47,7 +68,11 @@ class RankedTransaction {
   final DateTime happenedAt;
   final String? categoryName;
   final String? categoryIcon;
+  final String categoryIconType;
+  final String? categoryCustomIconPath;
   final String? note;
+  /// 该笔全部标签（ADR-036）。
+  final List<RankTagLabel> tags;
 }
 
 /// 某一周期的完整报表快照（一次拉取，避免 UI 多路 Future 竞态）。
@@ -104,13 +129,13 @@ class StatisticsRepository {
   }) async {
     final typeStr = type == ReportMoneyType.expense ? 'expense' : 'income';
 
-    final incomeTotal = await _sumInRange(
+    final incomeTotal = await sumInRange(
       ledgerId: ledgerId,
       type: 'income',
       start: period.start,
       end: period.end,
     );
-    final expenseTotal = await _sumInRange(
+    final expenseTotal = await sumInRange(
       ledgerId: ledgerId,
       type: 'expense',
       start: period.start,
@@ -120,7 +145,7 @@ class StatisticsRepository {
         type == ReportMoneyType.expense ? expenseTotal : incomeTotal;
 
     final prev = period.previous;
-    final prevPeriodTotal = await _sumInRange(
+    final prevPeriodTotal = await sumInRange(
       ledgerId: ledgerId,
       type: typeStr,
       start: prev.start,
@@ -156,11 +181,12 @@ class StatisticsRepository {
         type: typeStr,
         period: period,
       ),
-      ranking: _buildRanking(txs, byId),
+      ranking: await _buildRanking(txs, byId, limit: 10),
     );
   }
 
-  Future<double> _sumInRange({
+  /// 半开区间 [start, end) 合计；桌面小组件等复用。
+  Future<double> sumInRange({
     required int ledgerId,
     required String type,
     required DateTime start,
@@ -292,32 +318,53 @@ class StatisticsRepository {
     Map<int, Category> byId,
   ) {
     final totals = <int?, double>{};
+    final counts = <int?, int>{};
     final names = <int?, String>{};
     final icons = <int?, String?>{};
+    final iconTypes = <int?, String>{};
+    final customPaths = <int?, String?>{};
     for (final t in txs) {
       final cat = t.categoryId == null ? null : byId[t.categoryId];
       late final int? rootId;
       late final String name;
       late final String? icon;
+      late final String iconType;
+      late final String? customPath;
       if (cat == null) {
         rootId = null;
         name = '未分类';
         icon = null;
+        iconType = 'material';
+        customPath = null;
       } else if (cat.parentId == null) {
         rootId = cat.id;
         name = cat.name;
         icon = cat.icon;
+        iconType = cat.iconType;
+        customPath = cat.customIconPath;
       } else {
         final parent = byId[cat.parentId];
         rootId = parent?.id ?? cat.id;
         name = parent?.name ?? cat.name;
         icon = parent?.icon ?? cat.icon;
+        iconType = parent?.iconType ?? cat.iconType;
+        customPath = parent?.customIconPath ?? cat.customIconPath;
       }
       totals.update(rootId, (v) => v + t.amount, ifAbsent: () => t.amount);
+      counts.update(rootId, (v) => v + 1, ifAbsent: () => 1);
       names[rootId] = name;
       icons[rootId] = icon;
+      iconTypes[rootId] = iconType;
+      customPaths[rootId] = customPath;
     }
-    return _sortedSlices(totals, names, icons);
+    return _sortedSlices(
+      totals,
+      names,
+      icons,
+      iconTypes: iconTypes,
+      customPaths: customPaths,
+      counts: counts,
+    );
   }
 
   List<CompositionSlice> _composeSub(
@@ -325,16 +372,42 @@ class StatisticsRepository {
     Map<int, Category> byId,
   ) {
     final totals = <int?, double>{};
+    final counts = <int?, int>{};
     final names = <int?, String>{};
     final icons = <int?, String?>{};
+    final iconTypes = <int?, String>{};
+    final customPaths = <int?, String?>{};
     for (final t in txs) {
       final cat = t.categoryId == null ? null : byId[t.categoryId];
       final id = cat?.id;
       totals.update(id, (v) => v + t.amount, ifAbsent: () => t.amount);
-      names[id] = cat?.name ?? '未分类';
-      icons[id] = cat?.icon;
+      counts.update(id, (v) => v + 1, ifAbsent: () => 1);
+      if (cat == null) {
+        names[id] = '未分类';
+        icons[id] = null;
+        iconTypes[id] = 'material';
+        customPaths[id] = null;
+      } else if (cat.parentId != null) {
+        final parent = byId[cat.parentId];
+        names[id] = parent == null ? cat.name : '${parent.name}-${cat.name}';
+        icons[id] = cat.icon;
+        iconTypes[id] = cat.iconType;
+        customPaths[id] = cat.customIconPath;
+      } else {
+        names[id] = cat.name;
+        icons[id] = cat.icon;
+        iconTypes[id] = cat.iconType;
+        customPaths[id] = cat.customIconPath;
+      }
     }
-    return _sortedSlices(totals, names, icons);
+    return _sortedSlices(
+      totals,
+      names,
+      icons,
+      iconTypes: iconTypes,
+      customPaths: customPaths,
+      counts: counts,
+    );
   }
 
   Future<List<CompositionSlice>> _composeTags({
@@ -343,7 +416,7 @@ class StatisticsRepository {
     required DateTime start,
     required DateTime end,
   }) async {
-    final rows = await (_db.select(_db.transactions)
+    final txs = await (_db.select(_db.transactions)
           ..where((t) => t.ledgerId.equals(ledgerId))
           ..where((t) => t.type.equals(type))
           ..where(
@@ -351,40 +424,75 @@ class StatisticsRepository {
                 t.happenedAt.isBiggerOrEqualValue(start) &
                 t.happenedAt.isSmallerThanValue(end),
           ))
-        .join([
-      innerJoin(
-        _db.transactionTags,
-        _db.transactionTags.transactionId.equalsExp(_db.transactions.id),
-      ),
-      innerJoin(
-        _db.tags,
-        _db.tags.id.equalsExp(_db.transactionTags.tagId),
-      ),
-    ]).get();
+        .get();
 
     final totals = <int?, double>{};
+    final counts = <int?, int>{};
     final names = <int?, String>{};
-    for (final r in rows) {
-      final t = r.readTable(_db.transactions);
-      final tag = r.readTable(_db.tags);
-      totals.update(tag.id, (v) => v + t.amount, ifAbsent: () => t.amount);
-      names[tag.id] = tag.name;
+    final colors = <int?, String?>{};
+
+    if (txs.isEmpty) {
+      return const [];
     }
-    return _sortedSlices(totals, names, const {});
+
+    final txIds = txs.map((t) => t.id).toList();
+    final linkRows = await (_db.select(_db.transactionTags)
+          ..where((t) => t.transactionId.isIn(txIds)))
+        .get();
+    final tagIds = <int>{};
+    final tagsByTx = <int, List<int>>{};
+    for (final link in linkRows) {
+      tagIds.add(link.tagId);
+      tagsByTx.putIfAbsent(link.transactionId, () => []).add(link.tagId);
+    }
+
+    final tagRows = tagIds.isEmpty
+        ? <Tag>[]
+        : await (_db.select(_db.tags)..where((t) => t.id.isIn(tagIds))).get();
+    final tagById = {for (final t in tagRows) t.id: t};
+
+    for (final t in txs) {
+      final ids = tagsByTx[t.id];
+      if (ids == null || ids.isEmpty) {
+        totals.update(null, (v) => v + t.amount, ifAbsent: () => t.amount);
+        counts.update(null, (v) => v + 1, ifAbsent: () => 1);
+        names[null] = '未标注';
+        colors[null] = null;
+        continue;
+      }
+      for (final tagId in ids) {
+        final tag = tagById[tagId];
+        if (tag == null) continue;
+        totals.update(tag.id, (v) => v + t.amount, ifAbsent: () => t.amount);
+        counts.update(tag.id, (v) => v + 1, ifAbsent: () => 1);
+        names[tag.id] = tag.name;
+        colors[tag.id] = tag.color;
+      }
+    }
+
+    return _sortedSlices(totals, names, const {}, counts: counts, colors: colors);
   }
 
   List<CompositionSlice> _sortedSlices(
     Map<int?, double> totals,
     Map<int?, String> names,
-    Map<int?, String?> icons,
-  ) {
+    Map<int?, String?> icons, {
+    Map<int?, String> iconTypes = const {},
+    Map<int?, String?> customPaths = const {},
+    Map<int?, int> counts = const {},
+    Map<int?, String?> colors = const {},
+  }) {
     final list = totals.entries
         .map(
           (e) => CompositionSlice(
             id: e.key,
             name: names[e.key] ?? '未分类',
             icon: icons[e.key],
+            iconType: iconTypes[e.key] ?? 'material',
+            customIconPath: customPaths[e.key],
+            color: colors[e.key],
             total: e.value,
+            txCount: counts[e.key] ?? 0,
           ),
         )
         .toList()
@@ -403,7 +511,7 @@ class StatisticsRepository {
         final base = period.anchor;
         for (var i = 5; i >= 0; i--) {
           final m = DateTime(base.year, base.month - i);
-          final sum = await _sumInRange(
+          final sum = await sumInRange(
             ledgerId: ledgerId,
             type: type,
             start: m,
@@ -423,7 +531,7 @@ class StatisticsRepository {
         }
         final points = <SeriesPoint>[];
         for (final w in weeks) {
-          final sum = await _sumInRange(
+          final sum = await sumInRange(
             ledgerId: ledgerId,
             type: type,
             start: w.start,
@@ -443,7 +551,7 @@ class StatisticsRepository {
         final y = period.anchor.year;
         for (var i = 5; i >= 0; i--) {
           final year = y - i;
-          final sum = await _sumInRange(
+          final sum = await sumInRange(
             ledgerId: ledgerId,
             type: type,
             start: DateTime(year),
@@ -463,14 +571,16 @@ class StatisticsRepository {
     }
   }
 
-  List<RankedTransaction> _buildRanking(
+  Future<List<RankedTransaction>> _buildRanking(
     List<Transaction> txs,
     Map<int, Category> byId, {
-    int limit = 20,
-  }) {
+    int limit = 10,
+  }) async {
     final sorted = List<Transaction>.from(txs)
       ..sort((a, b) => b.amount.compareTo(a.amount));
-    return sorted.take(limit).map((t) {
+    final top = sorted.take(limit).toList();
+    final tagMap = await _tagsByTransactionIds(top.map((t) => t.id).toList());
+    return top.map((t) {
       final cat = t.categoryId == null ? null : byId[t.categoryId];
       return RankedTransaction(
         id: t.id,
@@ -478,8 +588,35 @@ class StatisticsRepository {
         happenedAt: t.happenedAt,
         categoryName: cat?.name,
         categoryIcon: cat?.icon,
+        categoryIconType: cat?.iconType ?? 'material',
+        categoryCustomIconPath: cat?.customIconPath,
         note: t.note,
+        tags: tagMap[t.id] ?? const [],
       );
     }).toList();
+  }
+
+  /// 每笔流水的全部标签名/色（排行展示用，ADR-036）。
+  Future<Map<int, List<RankTagLabel>>> _tagsByTransactionIds(
+    List<int> ids,
+  ) async {
+    if (ids.isEmpty) return const {};
+    final rows = await (_db.select(_db.transactionTags).join([
+          innerJoin(
+            _db.tags,
+            _db.tags.id.equalsExp(_db.transactionTags.tagId),
+          ),
+        ])
+          ..where(_db.transactionTags.transactionId.isIn(ids)))
+        .get();
+    final map = <int, List<RankTagLabel>>{};
+    for (final row in rows) {
+      final link = row.readTable(_db.transactionTags);
+      final tag = row.readTable(_db.tags);
+      map
+          .putIfAbsent(link.transactionId, () => <RankTagLabel>[])
+          .add(RankTagLabel(name: tag.name, color: tag.color));
+    }
+    return map;
   }
 }

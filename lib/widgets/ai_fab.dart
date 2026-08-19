@@ -3,7 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../styles/tokens.dart';
 
-/// 报表页 AI 浮动球：可拖动、位置按屏占比持久化；轻点进入 AI 账单助手。
+/// 报表页 AI 浮动球：可拖动、松手左右贴边；位置按屏占比持久化；轻点进入 AI 账单助手。
 ///
 /// 必须作为 [Stack] 的直接子节点（内部用 [Positioned.fill]，空白区不拦截手势）。
 class AiFab extends StatefulWidget {
@@ -18,11 +18,20 @@ class AiFab extends StatefulWidget {
   /// 累计位移超过该阈值才视为拖动，否则松手触发点击。
   static const _dragSlop = 8.0;
 
+  static const _snapDuration = Duration(milliseconds: 200);
+
+  /// 仅悬浮球使用的提亮渐变（约 +12%，不改聊天页共用 token）。
+  static const _fabGradientStart = Color(0xFF7D70FF);
+  static const _fabGradientEnd = Color(0xFF487DFF);
+
+  static const _iconAsset = 'assets/icons/ai_assistant.png';
+  static const _iconSize = 30.0;
+
   @override
   State<AiFab> createState() => _AiFabState();
 }
 
-class _AiFabState extends State<AiFab> {
+class _AiFabState extends State<AiFab> with SingleTickerProviderStateMixin {
   bool _pressed = false;
   bool _dragging = false;
 
@@ -36,10 +45,28 @@ class _AiFabState extends State<AiFab> {
   /// 拖动过程中的临时左上角（未提交比例）。
   Offset? _liveTopLeft;
 
+  late final AnimationController _snapController;
+  Animation<Offset>? _snapAnimation;
+  Size? _lastArea;
+
   @override
   void initState() {
     super.initState();
+    _snapController = AnimationController(
+      vsync: this,
+      duration: AiFab._snapDuration,
+    )..addListener(() {
+        final anim = _snapAnimation;
+        if (anim == null) return;
+        setState(() => _liveTopLeft = anim.value);
+      });
     _loadPosition();
+  }
+
+  @override
+  void dispose() {
+    _snapController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadPosition() async {
@@ -63,8 +90,8 @@ class _AiFabState extends State<AiFab> {
 
   Offset _defaultTopLeft(Size area) {
     return Offset(
-      area.width - AiFab.size - PigTokens.spaceLg,
-      area.height - AiFab.size - PigTokens.spaceLg,
+      area.width - AiFab.size - PigTokens.spaceSm,
+      area.height - AiFab.size - PigTokens.spaceSm,
     );
   }
 
@@ -75,6 +102,17 @@ class _AiFabState extends State<AiFab> {
       topLeft.dx.clamp(0.0, maxX),
       topLeft.dy.clamp(0.0, maxY),
     );
+  }
+
+  /// 左右贴边：吸到更近的一侧，边距 [PigTokens.spaceSm]；Y 不变。
+  Offset _snapHorizontal(Size area, Offset topLeft) {
+    final maxX = (area.width - AiFab.size).clamp(0.0, double.infinity);
+    final edge = PigTokens.spaceSm.toDouble();
+    final leftX = edge.clamp(0.0, maxX);
+    final rightX = (maxX - edge).clamp(0.0, maxX);
+    final mid = (leftX + rightX) / 2;
+    final snappedX = topLeft.dx <= mid ? leftX : rightX;
+    return _clamp(area, Offset(snappedX, topLeft.dy));
   }
 
   Offset _resolvedTopLeft(Size area) {
@@ -100,8 +138,24 @@ class _AiFabState extends State<AiFab> {
       _xRatio = xRatio;
       _yRatio = yRatio;
       _liveTopLeft = null;
+      _snapAnimation = null;
     });
     _savePosition(xRatio, yRatio);
+  }
+
+  void _snapAndCommit(Offset from, Size area) {
+    final target = _snapHorizontal(area, from);
+    if ((target - from).distance < 0.5) {
+      _commitPosition(target, area);
+      return;
+    }
+    _snapAnimation = Tween<Offset>(begin: from, end: target).animate(
+      CurvedAnimation(parent: _snapController, curve: Curves.easeOut),
+    );
+    _snapController.forward(from: 0).whenComplete(() {
+      if (!mounted) return;
+      _commitPosition(target, area);
+    });
   }
 
   @override
@@ -110,6 +164,7 @@ class _AiFabState extends State<AiFab> {
       child: LayoutBuilder(
         builder: (context, constraints) {
           final area = Size(constraints.maxWidth, constraints.maxHeight);
+          _lastArea = area;
           final pos = _resolvedTopLeft(area);
 
           return Stack(
@@ -120,10 +175,15 @@ class _AiFabState extends State<AiFab> {
                 top: pos.dy,
                 child: GestureDetector(
                   onPanStart: (_) {
+                    _snapController.stop();
+                    _snapAnimation = null;
                     _dragStartTopLeft = pos;
                     _dragDelta = Offset.zero;
                     _dragging = false;
-                    setState(() => _pressed = true);
+                    setState(() {
+                      _pressed = true;
+                      _liveTopLeft = pos;
+                    });
                   },
                   onPanUpdate: (details) {
                     final start = _dragStartTopLeft;
@@ -141,8 +201,10 @@ class _AiFabState extends State<AiFab> {
                   onPanEnd: (_) {
                     setState(() => _pressed = false);
                     if (_dragging) {
-                      _commitPosition(_liveTopLeft ?? pos, area);
+                      final from = _liveTopLeft ?? pos;
+                      _snapAndCommit(from, _lastArea ?? area);
                     } else {
+                      _liveTopLeft = null;
                       widget.onPressed();
                     }
                     _dragging = false;
@@ -153,6 +215,7 @@ class _AiFabState extends State<AiFab> {
                     setState(() {
                       _pressed = false;
                       _liveTopLeft = null;
+                      _snapAnimation = null;
                     });
                     _dragging = false;
                     _dragStartTopLeft = null;
@@ -175,28 +238,18 @@ class _AiFabState extends State<AiFab> {
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
                             colors: [
-                              PigTokens.aiGradientStart,
-                              PigTokens.aiGradientEnd,
+                              AiFab._fabGradientStart,
+                              AiFab._fabGradientEnd,
                             ],
                           ),
                         ),
-                        child: const Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              Icons.smart_toy_outlined,
-                              color: PigTokens.textOnPrimary,
-                              size: 22,
-                            ),
-                            Text(
-                              'AI',
-                              style: TextStyle(
-                                color: PigTokens.textOnPrimary,
-                                fontSize: 10,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ],
+                        child: const Center(
+                          child: Image(
+                            image: AssetImage(AiFab._iconAsset),
+                            width: AiFab._iconSize,
+                            height: AiFab._iconSize,
+                            color: PigTokens.textOnPrimary,
+                          ),
                         ),
                       ),
                     ),
