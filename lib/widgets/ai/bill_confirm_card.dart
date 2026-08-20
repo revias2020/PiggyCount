@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../ai/ai_category_match.dart';
 import '../../ai/bill_info.dart';
+import '../../providers/transaction_providers.dart';
 import '../../styles/tokens.dart';
 import '../../utils/money_format.dart';
 import 'bill_display.dart';
 
 /// 待确认账单卡片：用户确认后才落库。
-class BillConfirmCard extends StatelessWidget {
+class BillConfirmCard extends ConsumerWidget {
   const BillConfirmCard({
     super.key,
     required this.bill,
@@ -21,9 +24,18 @@ class BillConfirmCard extends StatelessWidget {
   final bool busy;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final isExpense = billIsExpense(bill);
     final time = formatBillTime(bill);
+    final catsAsync = isExpense
+        ? ref.watch(expenseCategoriesProvider)
+        : ref.watch(incomeCategoriesProvider);
+    final categoryName = catsAsync.maybeWhen(
+      data: (cats) => AiCategoryMatch.displayName(bill.category, cats),
+      orElse: () => (bill.category ?? '').trim().isNotEmpty
+          ? (bill.category ?? '').trim()
+          : '未分类',
+    );
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 6),
       padding: const EdgeInsets.all(14),
@@ -67,7 +79,7 @@ class BillConfirmCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            bill.category ?? '未分类',
+            categoryName,
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
           if (bill.note != null && bill.note!.isNotEmpty)

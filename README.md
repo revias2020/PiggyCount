@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B?logo=flutter)](https://flutter.dev)
 [![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20iOS-lightgrey)](#)
-[![Version](https://img.shields.io/badge/version-0.1.0-green)](pubspec.yaml)
+[![Version](https://img.shields.io/badge/version-0.2.1-green)](pubspec.yaml)
 
 **免费 · 开源 · 本机优先** 的个人记账应用。
 
@@ -24,7 +24,7 @@
 | 隐私 | 可能追踪 / 分析 | **无广告、无追踪、无强制登录** |
 | 记账方式 | 多为手动 | 手动 + 文字 / 图片 / 语音 / 截图自动化 |
 
-> 平台：Android · iOS（**0.1.0 真机测试以 Android 为主**；桌面小组件目前仅 Android）  
+> 平台：Android · iOS（**0.2.1 真机测试以 Android 为主**；桌面小组件目前仅 Android）  
 > 界面语言：简体中文（当前仅亮色模式）
 
 ---
@@ -102,6 +102,7 @@ flutter build apk --release --split-per-abi
 |---|---|
 | [docs/framework.md](docs/framework.md) | 产品边界与功能地图（维度 A–H） |
 | [docs/development.md](docs/development.md) | 同维度实现手册、风险与验收 |
+| [docs/version.md](docs/version.md) | 升级日志 |
 
 应用内「关于 → 使用教程」是面向使用者的操作说明。
 

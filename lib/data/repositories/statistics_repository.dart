@@ -195,6 +195,7 @@ class StatisticsRepository {
     final rows = await (_db.select(_db.transactions)
           ..where((t) => t.ledgerId.equals(ledgerId))
           ..where((t) => t.type.equals(type))
+          ..where((t) => t.deletedAt.isNull())
           ..where(
             (t) =>
                 t.happenedAt.isBiggerOrEqualValue(start) &
@@ -217,6 +218,7 @@ class StatisticsRepository {
     return (_db.select(_db.transactions)
           ..where((t) => t.ledgerId.equals(ledgerId))
           ..where((t) => t.type.equals(type))
+          ..where((t) => t.deletedAt.isNull())
           ..where(
             (t) =>
                 t.happenedAt.isBiggerOrEqualValue(start) &
@@ -419,6 +421,7 @@ class StatisticsRepository {
     final txs = await (_db.select(_db.transactions)
           ..where((t) => t.ledgerId.equals(ledgerId))
           ..where((t) => t.type.equals(type))
+          ..where((t) => t.deletedAt.isNull())
           ..where(
             (t) =>
                 t.happenedAt.isBiggerOrEqualValue(start) &

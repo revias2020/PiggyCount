@@ -1,3 +1,4 @@
+import '../../ai/ai_category_match.dart';
 import '../../ai/bill_info.dart';
 import '../../ai/extraction_context.dart';
 import '../../data/app_database.dart';
@@ -25,18 +26,9 @@ class BillCreationService {
     final income = await categories.listByKind('income');
     final bundles = await tags.getBundles();
 
-    final expenseNames = expense
-        .where((c) => c.parentId != null || !_hasChildren(c.id, expense))
-        .map((c) => c.name)
-        .toList();
-    final incomeNames = income
-        .where((c) => c.parentId != null || !_hasChildren(c.id, income))
-        .map((c) => c.name)
-        .toList();
-
     return AiExtractionContext(
-      expenseCategories: expenseNames,
-      incomeCategories: incomeNames,
+      expenseGroups: _toGroups(expense),
+      incomeGroups: _toGroups(income),
       tagGroups: [
         for (final b in bundles)
           AiTagGroupHint(
@@ -55,6 +47,19 @@ class BillCreationService {
     );
   }
 
+  List<AiCategoryGroupHint> _toGroups(List<Category> all) {
+    final mains = all.where((c) => c.parentId == null).toList();
+    return [
+      for (final m in mains)
+        AiCategoryGroupHint(
+          mainName: m.name,
+          childNames: [
+            for (final c in all.where((c) => c.parentId == m.id)) c.name,
+          ],
+        ),
+    ];
+  }
+
   String? _rangeLabel(Tag t) {
     final min = t.rangeMin;
     final max = t.rangeMax;
@@ -67,9 +72,6 @@ class BillCreationService {
     if (v == v.roundToDouble()) return v.toInt().toString();
     return v.toString();
   }
-
-  bool _hasChildren(int id, List<Category> all) =>
-      all.any((c) => c.parentId == id);
 
   /// 保存一笔；失败返回 null。
   Future<int?> createFromBill({
@@ -107,15 +109,8 @@ class BillCreationService {
     List<Category> cats,
   ) {
     if (cats.isEmpty) return null;
-    final needle = (name ?? '').trim();
-    if (needle.isNotEmpty) {
-      final exact = cats.where((c) => c.name == needle);
-      if (exact.isNotEmpty) return exact.first.id;
-      final contains = cats.where(
-        (c) => c.name.contains(needle) || needle.contains(c.name),
-      );
-      if (contains.isNotEmpty) return contains.first.id;
-    }
+    final resolved = AiCategoryMatch.resolve(name, cats);
+    if (resolved != null) return resolved.id;
     final hint = '${name ?? ''}${note ?? ''}';
     for (final c in cats) {
       if (hint.contains(c.name)) return c.id;

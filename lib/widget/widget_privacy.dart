@@ -19,6 +19,9 @@ abstract final class WidgetPrivacy {
   static const cacheDaysJson = 'glance_cache_days_json';
   static const cacheThemeArgb = 'glance_cache_theme_argb';
 
+  /// 隐私切换时刻（epoch ms）。Kotlin 侧据此跳过紧随其后的主进程全量重渲。
+  static const privacyToggledAtKey = 'glance_privacy_toggled_at';
+
   static Future<bool> isHidden(HWSize size) async {
     final key = size == HWSize.small ? hideSmallKey : hideMediumKey;
     return await HomeWidget.getWidgetData<bool>(key) ?? false;
@@ -41,11 +44,18 @@ abstract final class WidgetPrivacy {
   }
 
   /// 切换指定尺寸隐藏态并仅重渲该规格（后台 isolate 可用）。
+  ///
+  /// 先写 [privacyToggledAtKey]，再渲图 / updateWidget：避免 Provider 收到
+  /// UPDATE / OPTIONS_CHANGED 后误发主进程全量刷新（约 1s 后再闪一次）。
   static Future<void> toggleAndRerender(String? sizeParam) async {
     final size = sizeParam == 'small' ? HWSize.small : HWSize.medium;
     final key = size == HWSize.small ? hideSmallKey : hideMediumKey;
     final cur = await HomeWidget.getWidgetData<bool>(key) ?? false;
     await HomeWidget.saveWidgetData(key, !cur);
+    await HomeWidget.saveWidgetData(
+      privacyToggledAtKey,
+      DateTime.now().millisecondsSinceEpoch,
+    );
     await rerenderFromCache(size);
   }
 
@@ -59,10 +69,10 @@ abstract final class WidgetPrivacy {
             formatWidgetMoney(0);
     final monthExpense =
         await HomeWidget.getWidgetData<String>(cacheMonthExpense) ??
-            formatWidgetMoney(0);
+            formatWidgetMoneyCompact(0);
     final monthIncome =
         await HomeWidget.getWidgetData<String>(cacheMonthIncome) ??
-            formatWidgetMoney(0);
+            formatWidgetMoneyCompact(0);
     final daysJson = await HomeWidget.getWidgetData<String>(cacheDaysJson);
     final days = GlanceWidgetData.parseLast7DaysJson(daysJson);
     final argb = await HomeWidget.getWidgetData<int>(cacheThemeArgb);

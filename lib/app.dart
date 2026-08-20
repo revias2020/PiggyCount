@@ -151,10 +151,12 @@ class _PiggyAppState extends ConsumerState<PiggyApp>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final ctx = rootNavigatorKey.currentContext;
       if (ctx == null || !ctx.mounted) return;
+      final title =
+          body.contains('已存在相同账本') ? '记账取消' : '记账失败';
       showDialog<void>(
         context: ctx,
         builder: (dialogCtx) => AlertDialog(
-          title: const Text('记账失败'),
+          title: Text(title),
           content: Text(body),
           actions: [
             TextButton(

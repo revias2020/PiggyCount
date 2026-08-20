@@ -72,6 +72,40 @@ class AiProviderStore {
   }
 
   /// 解析某能力当前服务商；未就绪抛 [AiCapabilityNotReadyException]。
+  /// 后台直存 Vision 回退候选：主绑定优先，其余按列表顺序；仅 [visionReadyForCapability]。
+  Future<List<AiServiceProvider>> listVisionFallbackProviders() async {
+    final binding = await loadBinding();
+    final providers = await loadProviders();
+    return orderVisionFallbackProviders(
+      providers,
+      binding.visionProviderId,
+    );
+  }
+
+  /// 纯函数：便于单测回退顺序。
+  static List<AiServiceProvider> orderVisionFallbackProviders(
+    List<AiServiceProvider> providers,
+    String? primaryId,
+  ) {
+    final ready =
+        providers.where((p) => p.visionReadyForCapability).toList(growable: false);
+    if (ready.isEmpty) return const [];
+
+    final ordered = <AiServiceProvider>[];
+    if (primaryId != null && primaryId.isNotEmpty) {
+      for (final p in ready) {
+        if (p.id == primaryId) {
+          ordered.add(p);
+          break;
+        }
+      }
+    }
+    for (final p in ready) {
+      if (p.id != primaryId) ordered.add(p);
+    }
+    return ordered;
+  }
+
   Future<AiServiceProvider> resolve(AiCapabilityKind kind) async {
     final binding = await loadBinding();
     final id = kind == AiCapabilityKind.text

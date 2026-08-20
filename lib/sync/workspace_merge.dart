@@ -1,8 +1,10 @@
 import '../utils/bill_fingerprint.dart';
 import 'workspace_models.dart';
 
-/// 工作区合并：分类/标签 → 账本折合改写指纹 → 账单。ADR-042。
+/// 工作区合并：分类/标签 → 账本折合改写指纹 → 账单按身份。ADR-042 / ADR-044。
 abstract final class WorkspaceMerge {
+  static const billTombRetention = Duration(days: 90);
+
   static WorkspaceMergeResult merge({
     required WorkspaceSnapshot local,
     required WorkspaceSnapshot remote,
@@ -104,7 +106,7 @@ abstract final class WorkspaceMerge {
     final bills = _unionById(
       rewrittenLocal,
       rewrittenRemote,
-      (b) => b.fingerprint,
+      (b) => b.syncId,
       _lwwBill,
     );
 
@@ -154,16 +156,82 @@ abstract final class WorkspaceMerge {
           local.ledgers,
         ),
         bills: _diff(
-          local.bills.where((e) => e.isLive).map((e) => e.fingerprint),
+          local.bills.where((e) => e.isLive).map((e) => e.syncId),
           merged.bills,
-          (e) => e.fingerprint,
+          (e) => e.syncId,
           (e) => e.isLive,
           _billChanged,
           local.bills,
         ),
+        duplicates: duplicateGroups(bills),
         categoryTreeConflict: treeConflict,
       ),
     );
+  }
+
+  /// 存活账单中「同指纹、不同身份」的组。
+  static List<BillDuplicateGroup> duplicateGroups(List<SyncBill> bills) {
+    final groups = <String, List<SyncBill>>{};
+    for (final b in bills) {
+      if (!b.isLive) continue;
+      (groups[b.fingerprint] ??= []).add(b);
+    }
+    final out = <BillDuplicateGroup>[];
+    for (final e in groups.entries) {
+      if (e.value.length < 2) continue;
+      final items = [...e.value]
+        ..sort((a, b) => a.syncId.compareTo(b.syncId));
+      out.add(BillDuplicateGroup(fingerprint: e.key, bills: items));
+    }
+    out.sort((a, b) => a.fingerprint.compareTo(b.fingerprint));
+    return out;
+  }
+
+  /// 用户在预览里选择「合并」的指纹组：整条 LWW，落败留墓碑。
+  static WorkspaceSnapshot foldBillDuplicates({
+    required WorkspaceSnapshot snap,
+    required Set<String> mergeFingerprints,
+    required DateTime now,
+  }) {
+    if (mergeFingerprints.isEmpty) return snap;
+    final byId = {for (final b in snap.bills) b.syncId: b};
+    final groups = <String, List<SyncBill>>{};
+    for (final b in snap.bills) {
+      if (!b.isLive) continue;
+      if (!mergeFingerprints.contains(b.fingerprint)) continue;
+      (groups[b.fingerprint] ??= []).add(b);
+    }
+    for (final group in groups.values) {
+      if (group.length < 2) continue;
+      var winner = group.first;
+      for (final item in group.skip(1)) {
+        winner = _lwwBill(winner, item);
+      }
+      for (final item in group) {
+        if (item.syncId == winner.syncId) continue;
+        byId[item.syncId] = item.copyWith(deletedAt: now, updatedAt: now);
+      }
+    }
+    return snap.copyWith(bills: byId.values.toList());
+  }
+
+  /// 丢掉「墓碑且超过 90 天」的账单，避免再次上传。
+  static WorkspaceSnapshot pruneExpiredBillTombs(
+    WorkspaceSnapshot snap,
+    DateTime now,
+  ) {
+    final bills = [
+      for (final b in snap.bills)
+        if (!_billTombExpired(b, now)) b,
+    ];
+    if (bills.length == snap.bills.length) return snap;
+    return snap.copyWith(bills: bills);
+  }
+
+  static bool _billTombExpired(SyncBill bill, DateTime now) {
+    final deletedAt = bill.deletedAt;
+    if (deletedAt == null) return false;
+    return now.difference(deletedAt) > billTombRetention;
   }
 
   static SyncLedger _maybeResurrect(
@@ -352,8 +420,8 @@ SyncBill _lwwBill(SyncBill a, SyncBill b) => _pickLww(
       b: b,
       aAt: a.updatedAt,
       bAt: b.updatedAt,
-      aId: a.fingerprint,
-      bId: b.fingerprint,
+      aId: a.syncId,
+      bId: b.syncId,
     );
 
 SyncPreviewCounts _diff<T>(
@@ -421,6 +489,7 @@ bool _tagChanged(SyncTag a, SyncTag b) =>
 bool _billChanged(SyncBill a, SyncBill b) =>
     a.amount != b.amount ||
     a.happenedAt != b.happenedAt ||
+    a.fingerprint != b.fingerprint ||
     a.categoryName != b.categoryName ||
     a.note != b.note ||
     a.ledgerSyncId != b.ledgerSyncId ||

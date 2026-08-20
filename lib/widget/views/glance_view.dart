@@ -76,7 +76,7 @@ class GlanceView extends StatelessWidget {
   Widget _buildSmall() {
     final textSecondary = widgetTextSecondary();
     final pad = width < 130 ? 10.0 : 12.0;
-    // ADR-026：顶行圆点+「今日支出」+眼睛；金额约 20；本月两列均分无竖线。
+    // 顶行圆点+「今日支出」+眼睛；金额约 20；本月两列均分无竖线；底栏标签 8。
     return Container(
       width: width,
       height: height,
@@ -174,7 +174,7 @@ class GlanceView extends StatelessWidget {
       children: [
         Text(
           label,
-          style: TextStyle(fontSize: 9, color: labelColor),
+          style: TextStyle(fontSize: 8, color: labelColor),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
@@ -256,22 +256,37 @@ class GlanceView extends StatelessWidget {
           ),
           SizedBox(height: compact ? 8 : 12),
           Expanded(
-            child: Container(
-              width: double.infinity,
-              padding: EdgeInsets.fromLTRB(
-                compact ? 6 : 10,
-                compact ? 8 : 10,
-                compact ? 6 : 10,
-                compact ? 4 : 6,
-              ),
-              decoration: BoxDecoration(
-                color: widgetInnerPanel(),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: _WeekChart(
-                days: days,
-                amountsHidden: amountsHidden,
-              ),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                // 柱区固定高度，不随槽位把剩余空间撑满；过矮时再收缩以免溢出。
+                final desired = compact ? 40.0 : 52.0;
+                final chartH = desired < constraints.maxHeight
+                    ? desired
+                    : constraints.maxHeight;
+                return Align(
+                  alignment: Alignment.bottomCenter,
+                  child: SizedBox(
+                    height: chartH,
+                    width: double.infinity,
+                    child: Container(
+                      padding: EdgeInsets.fromLTRB(
+                        compact ? 6 : 10,
+                        compact ? 6 : 8,
+                        compact ? 6 : 10,
+                        compact ? 2 : 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: widgetInnerPanel(),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: _WeekChart(
+                        days: days,
+                        amountsHidden: amountsHidden,
+                      ),
+                    ),
+                  ),
+                );
+              },
             ),
           ),
         ],

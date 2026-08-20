@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 
 import '../../utils/app_permissions.dart';
+import '../system/logger_service.dart';
 import 'auto_billing_service.dart';
 
 /// Android 截图监听 Dart 端适配。
@@ -45,6 +46,12 @@ class ScreenshotMonitorService {
           showNotification: true,
           autoSave: true,
         );
+        return;
+      }
+      if (call.method == 'onScreenshotSettleLog') {
+        final message = call.arguments as String?;
+        if (message == null || message.isEmpty) return;
+        logger.info('Screenshot', message);
       }
     });
 

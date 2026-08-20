@@ -1,16 +1,27 @@
-/// 拼装 Prompt 所需的用户上下文（无账户；分类名列表即可）。
+/// 拼装 Prompt 所需的用户上下文（无账户；分类按主类分组，ADR-047）。
 class AiExtractionContext {
   const AiExtractionContext({
-    this.expenseCategories = const [],
-    this.incomeCategories = const [],
+    this.expenseGroups = const [],
+    this.incomeGroups = const [],
     this.tagGroups = const [],
   });
 
-  final List<String> expenseCategories;
-  final List<String> incomeCategories;
+  final List<AiCategoryGroupHint> expenseGroups;
+  final List<AiCategoryGroupHint> incomeGroups;
   final List<AiTagGroupHint> tagGroups;
 
   static const AiExtractionContext fallback = AiExtractionContext();
+}
+
+/// 一个主类及其子类名（prompt 分组用）。
+class AiCategoryGroupHint {
+  const AiCategoryGroupHint({
+    required this.mainName,
+    this.childNames = const [],
+  });
+
+  final String mainName;
+  final List<String> childNames;
 }
 
 /// Prompt 里描述一个标签组。

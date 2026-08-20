@@ -83,9 +83,9 @@ class Transactions extends Table {
   TextColumn get note => text().nullable()();
   /// `manual` | `voice` | `screenshot` | `share` | `ai_chat`
   TextColumn get source => text().withDefault(const Constant('manual'))();
-  /// 遗留列；跨设备认亲以 [fingerprint] 为准（ADR-042）。
+  /// 跨设备身份（创建时 UUID，ADR-044）。
   TextColumn get syncId => text()();
-  /// 账单指纹：账本 UUID + 金额到分 + 账单时间到秒。
+  /// 内容签名：账本 UUID + 金额到分 + 账单时间到秒；用于去重，不是身份。
   TextColumn get fingerprint => text()();
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
   DateTimeColumn get updatedAt => dateTime().withDefault(currentDateAndTime)();

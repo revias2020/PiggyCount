@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../ai/ai_category_match.dart';
 import '../../ai/bill_info.dart';
-import '../../data/app_database.dart';
 import '../../providers/transaction_providers.dart';
 import '../../styles/tokens.dart';
 import '../../utils/money_format.dart';
@@ -22,18 +22,6 @@ class BillSelectTile extends ConsumerWidget {
   final bool selected;
   final ValueChanged<bool?>? onChanged;
 
-  Category? _matchDisplay(List<Category> cats) {
-    final needle = (bill.category ?? '').trim();
-    if (needle.isEmpty || cats.isEmpty) return null;
-    final exact = cats.where((c) => c.name == needle);
-    if (exact.isNotEmpty) return exact.first;
-    final contains = cats.where(
-      (c) => c.name.contains(needle) || needle.contains(c.name),
-    );
-    if (contains.isNotEmpty) return contains.first;
-    return null;
-  }
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isExpense = billIsExpense(bill);
@@ -41,7 +29,7 @@ class BillSelectTile extends ConsumerWidget {
         ? ref.watch(expenseCategoriesProvider)
         : ref.watch(incomeCategoriesProvider);
     final matched = catsAsync.maybeWhen(
-      data: _matchDisplay,
+      data: (cats) => AiCategoryMatch.resolve(bill.category, cats),
       orElse: () => null,
     );
     final categoryName = matched?.name ??

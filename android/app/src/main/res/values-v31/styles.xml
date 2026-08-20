@@ -2,7 +2,7 @@
 <resources>
     <!-- Theme applied to the Android Window while the process is starting when the OS's Dark Mode setting is off -->
     <style name="LaunchTheme" parent="@android:style/Theme.Light.NoTitleBar">
-        <!-- ADR-030：小组件/深链冷启也显示启动白猪（API 33+）。 -->
+        <!-- ADR-030：桌面图标冷启显示启动白猪（API 33+）；小组件经中转不走此主题。 -->
         <item name="android:windowSplashScreenBehavior">icon_preferred</item>
         <item name="android:forceDarkAllowed">false</item>
         <item name="android:windowFullscreen">false</item>
@@ -19,5 +19,14 @@
          This Theme is only used starting with V2 of Flutter's Android embedding. -->
     <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
         <item name="android:windowBackground">?android:colorBackground</item>
+    </style>
+    <!-- API 31+：中转页不得带系统 Splash（否则热启分享仍闪白猪） -->
+    <style name="Theme.Piggy.ShareRelay" parent="@android:style/Theme.Translucent.NoTitleBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@null</item>
+        <item name="android:windowSplashScreenBackground">@android:color/transparent</item>
     </style>
 </resources>

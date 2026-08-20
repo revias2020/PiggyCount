@@ -73,7 +73,7 @@ class TransactionRowTile extends ConsumerWidget {
           context: context,
           builder: (ctx) => AlertDialog(
             title: const Text('删除账单'),
-            content: const Text('确定删除这条账单？'),
+            content: const Text('确定删除这条账单？删除后不可恢复。'),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx, false),

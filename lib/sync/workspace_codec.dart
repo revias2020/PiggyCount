@@ -2,7 +2,7 @@ import 'workspace_models.dart';
 
 /// 工作区 JSON 编解码。远端文件 `piggy_workspace.json`（ADR-042）。
 abstract final class WorkspaceCodec {
-  static const version = 1;
+  static const version = 2;
 
   static Map<String, Object?> encode(WorkspaceSnapshot snap) {
     return {
@@ -59,6 +59,7 @@ abstract final class WorkspaceCodec {
       'bills': [
         for (final e in snap.bills)
           {
+            'syncId': e.syncId,
             'fingerprint': e.fingerprint,
             'ledgerSyncId': e.ledgerSyncId,
             'type': e.type,
@@ -138,6 +139,7 @@ abstract final class WorkspaceCodec {
       bills: [
         for (final e in list('bills'))
           SyncBill(
+            syncId: (e['syncId'] as String?) ?? (e['fingerprint'] as String),
             fingerprint: e['fingerprint'] as String,
             ledgerSyncId: e['ledgerSyncId'] as String,
             type: e['type'] as String,

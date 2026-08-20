@@ -140,8 +140,8 @@ void main() {
       tester,
       GlanceView.small(
         todayExpense: '¥88.50',
-        monthExpense: '¥3,200.50',
-        monthIncome: '¥8,000.00',
+        monthExpense: '¥3.20k',
+        monthIncome: '¥8.00k',
         themeColor: PigTokens.primary,
         width: 110,
         height: 110,

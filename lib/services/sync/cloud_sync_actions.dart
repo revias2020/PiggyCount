@@ -10,6 +10,7 @@ import '../../sync/workspace_codec.dart';
 import '../../sync/workspace_merge.dart';
 import '../../sync/workspace_models.dart';
 import '../../sync/workspace_store.dart';
+import '../../utils/happened_at.dart';
 import '../system/logger_service.dart';
 import 'cloud_sync_config.dart';
 import 'cloud_sync_providers.dart';
@@ -94,12 +95,12 @@ Future<void> runWorkspaceSync({
   }
   if (!context.mounted) return;
 
-  final apply = await showSyncPreviewDialog(context, merged.preview);
-  if (apply != true || !context.mounted) return;
+  final choice = await showSyncPreviewDialog(context, merged.preview);
+  if (choice == null || !context.mounted) return;
 
   try {
     await _withBusy(context, '正在写入…', () async {
-      var snapshot = merged.merged;
+      var snapshot = _prepareWrite(merged.merged, choice.mergeFingerprints);
       var etag = remote.etag;
       const maxAttempts = 3;
       for (var i = 0; i < maxAttempts; i++) {
@@ -114,10 +115,13 @@ Future<void> runWorkspaceSync({
           if (i == maxAttempts - 1) rethrow;
           remote = await service.downloadWorkspace(cfg);
           final local = await store.capture();
-          snapshot = WorkspaceMerge.merge(
-            local: local,
-            remote: _decodeRemote(remote.body),
-          ).merged;
+          snapshot = _prepareWrite(
+            WorkspaceMerge.merge(
+              local: local,
+              remote: _decodeRemote(remote.body),
+            ).merged,
+            choice.mergeFingerprints,
+          );
           etag = remote.etag;
         }
       }
@@ -146,44 +150,181 @@ WorkspaceSnapshot _decodeRemote(String? body) {
   return WorkspaceCodec.decode(Map<String, Object?>.from(json));
 }
 
-Future<bool?> showSyncPreviewDialog(
+WorkspaceSnapshot _prepareWrite(
+  WorkspaceSnapshot merged,
+  Set<String> mergeFingerprints,
+) {
+  final now = HappenedAt.now();
+  final folded = WorkspaceMerge.foldBillDuplicates(
+    snap: merged,
+    mergeFingerprints: mergeFingerprints,
+    now: now,
+  );
+  return WorkspaceMerge.pruneExpiredBillTombs(folded, now);
+}
+
+class SyncPreviewChoice {
+  const SyncPreviewChoice({this.mergeFingerprints = const {}});
+
+  final Set<String> mergeFingerprints;
+}
+
+Future<SyncPreviewChoice?> showSyncPreviewDialog(
   BuildContext context,
   SyncPreview preview,
 ) {
-  return showDialog<bool>(
+  return showDialog<SyncPreviewChoice>(
     context: context,
-    builder: (ctx) => AlertDialog(
+    builder: (ctx) => _SyncPreviewDialog(preview: preview),
+  );
+}
+
+class _SyncPreviewDialog extends StatefulWidget {
+  const _SyncPreviewDialog({required this.preview});
+
+  final SyncPreview preview;
+
+  @override
+  State<_SyncPreviewDialog> createState() => _SyncPreviewDialogState();
+}
+
+class _SyncPreviewDialogState extends State<_SyncPreviewDialog> {
+  final Set<String> _merge = {};
+
+  @override
+  Widget build(BuildContext context) {
+    final preview = widget.preview;
+    return AlertDialog(
       title: const Text('同步预览'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _previewRow('分类与标签', preview.catalog),
-          const SizedBox(height: 8),
-          _previewRow('账本', preview.ledgers),
-          const SizedBox(height: 8),
-          _previewRow('账单', preview.bills),
-          if (preview.categoryTreeConflict != null) ...[
-            const SizedBox(height: 12),
-            Text(
-              preview.categoryTreeConflict!,
-              style: const TextStyle(color: PigTokens.danger, fontSize: 13),
-            ),
-          ],
-        ],
+      content: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.6,
+          maxWidth: 420,
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _previewRow('分类与标签', preview.catalog),
+              const SizedBox(height: PigTokens.spaceSm),
+              _previewRow('账本', preview.ledgers),
+              const SizedBox(height: PigTokens.spaceSm),
+              _previewRow('账单', preview.bills),
+              if (preview.duplicates.isNotEmpty) ...[
+                const SizedBox(height: PigTokens.spaceLg),
+                const Text(
+                  '疑似重复（同账本、金额、时间）',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  '默认保留为两条。选合并则留下较晚改动的一条。',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: PigTokens.textSecondary,
+                  ),
+                ),
+                for (final group in preview.duplicates) ...[
+                  const SizedBox(height: PigTokens.spaceMd),
+                  _duplicateGroup(group),
+                ],
+              ],
+              if (preview.categoryTreeConflict != null) ...[
+                const SizedBox(height: PigTokens.spaceMd),
+                Text(
+                  preview.categoryTreeConflict!,
+                  style: const TextStyle(color: PigTokens.danger, fontSize: 13),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.pop(ctx, false),
+          onPressed: () => Navigator.pop(context),
           child: const Text('取消'),
         ),
         FilledButton(
-          onPressed: () => Navigator.pop(ctx, true),
+          onPressed: () => Navigator.pop(
+            context,
+            SyncPreviewChoice(mergeFingerprints: Set.of(_merge)),
+          ),
           child: const Text('应用'),
         ),
       ],
-    ),
-  );
+    );
+  }
+
+  Widget _duplicateGroup(BillDuplicateGroup group) {
+    final sample = group.bills.first;
+    final merge = _merge.contains(group.fingerprint);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '¥${sample.amount.toStringAsFixed(2)} · ${_formatWhen(sample.happenedAt)}',
+          style: const TextStyle(fontSize: 14),
+        ),
+        for (final bill in group.bills)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text(
+              '· ${_billCaption(bill)}',
+              style: const TextStyle(
+                fontSize: 13,
+                color: PigTokens.textSecondary,
+              ),
+            ),
+          ),
+        Row(
+          children: [
+            TextButton(
+              onPressed: () => setState(() {
+                _merge.remove(group.fingerprint);
+              }),
+              child: Text(
+                '保留',
+                style: TextStyle(
+                  fontWeight: merge ? FontWeight.w400 : FontWeight.w700,
+                ),
+              ),
+            ),
+            TextButton(
+              onPressed: () => setState(() {
+                _merge.add(group.fingerprint);
+              }),
+              child: Text(
+                '合并',
+                style: TextStyle(
+                  fontWeight: merge ? FontWeight.w700 : FontWeight.w400,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+String _billCaption(SyncBill bill) {
+  final cat = (bill.categoryName == null || bill.categoryName!.isEmpty)
+      ? '无分类'
+      : bill.categoryName!;
+  final note = bill.note?.trim();
+  if (note == null || note.isEmpty) return cat;
+  return '$cat · $note';
+}
+
+String _formatWhen(DateTime t) {
+  final hh = t.hour.toString().padLeft(2, '0');
+  final mm = t.minute.toString().padLeft(2, '0');
+  return '${t.month}月${t.day}日 $hh:$mm';
 }
 
 Widget _previewRow(String label, SyncPreviewCounts counts) {

@@ -19,6 +19,7 @@ class SyncPreview {
     required this.catalog,
     required this.ledgers,
     required this.bills,
+    this.duplicates = const [],
     this.categoryTreeConflict,
   });
 
@@ -26,8 +27,22 @@ class SyncPreview {
   final SyncPreviewCounts ledgers;
   final SyncPreviewCounts bills;
 
+  /// 不同账单身份、相同账单指纹的疑似重复（ADR-044）。
+  final List<BillDuplicateGroup> duplicates;
+
   /// 目标树不合法、已强制子变主时的说明。
   final String? categoryTreeConflict;
+}
+
+/// 预览里一组可折合的疑似重复账单。
+class BillDuplicateGroup {
+  const BillDuplicateGroup({
+    required this.fingerprint,
+    required this.bills,
+  });
+
+  final String fingerprint;
+  final List<SyncBill> bills;
 }
 
 class SyncLedger {
@@ -209,6 +224,7 @@ class SyncTag {
 
 class SyncBill {
   const SyncBill({
+    required this.syncId,
     required this.fingerprint,
     required this.ledgerSyncId,
     required this.type,
@@ -222,6 +238,8 @@ class SyncBill {
     this.deletedAt,
   });
 
+  /// 跨设备账单身份（创建时 UUID，ADR-044）。
+  final String syncId;
   final String fingerprint;
   final String ledgerSyncId;
   final String type;
@@ -237,6 +255,7 @@ class SyncBill {
   bool get isLive => deletedAt == null;
 
   SyncBill copyWith({
+    String? syncId,
     String? fingerprint,
     String? ledgerSyncId,
     String? type,
@@ -251,6 +270,7 @@ class SyncBill {
     bool clearDeletedAt = false,
   }) {
     return SyncBill(
+      syncId: syncId ?? this.syncId,
       fingerprint: fingerprint ?? this.fingerprint,
       ledgerSyncId: ledgerSyncId ?? this.ledgerSyncId,
       type: type ?? this.type,
@@ -280,6 +300,22 @@ class WorkspaceSnapshot {
   final List<SyncTagGroup> tagGroups;
   final List<SyncTag> tags;
   final List<SyncBill> bills;
+
+  WorkspaceSnapshot copyWith({
+    List<SyncLedger>? ledgers,
+    List<SyncCategory>? categories,
+    List<SyncTagGroup>? tagGroups,
+    List<SyncTag>? tags,
+    List<SyncBill>? bills,
+  }) {
+    return WorkspaceSnapshot(
+      ledgers: ledgers ?? this.ledgers,
+      categories: categories ?? this.categories,
+      tagGroups: tagGroups ?? this.tagGroups,
+      tags: tags ?? this.tags,
+      bills: bills ?? this.bills,
+    );
+  }
 }
 
 class WorkspaceMergeResult {

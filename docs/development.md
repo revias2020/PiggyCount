@@ -3,7 +3,8 @@
 > 与 [framework.md](./framework.md) **同一套功能维度**。本文件写实现：怎么跑、关键规则、代码落点。  
 > 用户安装见 [README.md](../README.md)。
 
-**版本：** `0.1.0+1`（公开源码 + Android 真机测试包）· 整理 2026-08-19  
+**版本：** `0.2.1+3`（公开源码 + Android 真机测试包）· 整理 2026-08-20  
+升级说明见 [version.md](./version.md)。
 
 文中「ADR-xxx」仅为历史决策编号索引（附录）；规则正文已写在各功能节，仓库内不再保留 ADR / CONTEXT 原文。
 
@@ -46,7 +47,7 @@ App 启动即打开 Drift 库；新库播种出厂目录；业务经 Repository�
 ### 关键规则
 
 - 出厂目录只在新库种一次（ADR-0039）  
-- 实体跨设备身份用创建时 UUID（`syncId`）；账单另用指纹  
+- 实体跨设备身份用创建时 UUID（`syncId`）；账单亦然（ADR-044）。指纹只作内容签名，不当身份  
 - 改动比较：墙上时钟 `updatedAt`；删除：墓碑 `deletedAt`  
 
 ### 代码
@@ -241,6 +242,8 @@ ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040（及明细同步钮 ADR-042�
 
 - 构成环色 ≠ 分类彩标（ADR-033 vs 008）  
 - 漏标过期 → 「改了账报表不更新」  
+- **用户可见统计只计存活账单**（`deletedAt` 为空）；`StatisticsRepository` 与明细同源过滤，墓碑永不入合计/构成/排行（ADR-046）  
+- 删除确认：单删「确定删除这条账单？删除后不可恢复。」；批量「确定删除选中的 N 笔账单？删除后不可恢复。」  
 
 ### 代码
 
@@ -283,12 +286,14 @@ ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040（及明细同步钮 ADR-042�
 ### 关键规则
 
 - **实付金额：** 有应付与实付时取实付  
+- **账单时间：** 资金变动时刻（支付 > 订单类标签）；禁止自取/配送/预约等履约时间；仅有履约时间则用 `CURRENT_TIME`  
 - **提取备注：** ≤15 字；店名/商品优先；支付方式走标签  
+- **分类消歧（ADR-047）：** Prompt 按主类分组；可回写值为主类裸名与「主类-子类」；先主类再子类，都不贴用主类；匹配优先复合名再裸名；确认/明细展示仍用裸名  
 - 空 Key / 未就绪：中文提示 +「去设置」，不静默打网  
 
 ### 代码
 
-`ai_provider_config.dart` · `ai_provider_store.dart` · `openai_compatible_client.dart` · `prompt_builder.dart` · `extraction_engine.dart` · `ai_bookkeeper.dart` · `bill_creation_service.dart` · `ai_settings_page.dart` 等 · `ai_providers.dart`  
+`ai_provider_config.dart` · `ai_provider_store.dart` · `openai_compatible_client.dart` · `prompt_builder.dart` · `ai_category_match.dart` · `extraction_engine.dart` · `ai_bookkeeper.dart` · `bill_creation_service.dart` · `ai_settings_page.dart` 等 · `ai_providers.dart`  
 默认智谱：`open.bigmodel.cn` · `glm-4-flash` / `glm-4v-flash`
 
 ---
@@ -310,11 +315,15 @@ ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040（及明细同步钮 ADR-042�
 | 截图自动 | 「我的」开关（默认关） | 通知 → Vision → **自动落库** |
 | 分享入账 | 系统分享 | 始终可收（不受截图开关）→ 同上 |
 
+**分享入账（Android）：** `ShareRelayActivity`（透明）接 `ACTION_SEND` → 拷图 → 以 `SINGLE_TOP|CLEAR_TOP|NEW_TASK` 打进 `MainActivity`。**热启动**不得出现启动页；冷启动仍走主界面 LaunchTheme。
+
 **识别确认弹层：** 复选默认全选；确认(N)；关即丢弃；串行落库可部分成功重试；行内只读；圆标按名匹配，未命中「未分类」（勿用落库兜底类）。
 
 **后台：** `AutoBillingService` 串行；通知点击成功→明细、失败→明细+框（未点不弹）；无通知权限仍可直存。未就绪：后台失败通知引导设置；前台 Toast+去设置。
 
-Android：`ScreenshotObserver`（MediaStore）。iOS：仅快捷指令引导。
+**截图稳定期（ADR-045）：** 检测到截图候选后先进入稳定期（默认 **2s**，自最近一次变更起算）。同一路径在稳定期内再次 `onChange`、`IS_PENDING` 清写、或 size 变化 → **重置计时**；期满且文件仍可读才回调 Dart。**稳定期结束前不得**入账、**不得**把路径记入 native/Dart 已处理集；稳定期内删除 → 取消。连拍：每路径独立计时，Vision 仍由 `AutoBillingService` 串行。稳定期结束后才发进度通知。分享入账、前台选图不走稳定期。
+
+Android：`ScreenshotObserver`（MediaStore + 稳定期；覆盖同路径友好；另存新文件时原图仍可能入账）。iOS：仅快捷指令引导。
 
 ### 关键规则
 
@@ -323,7 +332,7 @@ Android：`ScreenshotObserver`（MediaStore）。iOS：仅快捷指令引导。
 
 ### 代码
 
-`auto_billing_service.dart` · `billing_notification_service.dart` · `image_share_handler.dart` · `screenshot_monitor_service.dart` · Native `ScreenshotObserver.kt` · `speech_asr_service.dart` · `bill_select_tile.dart`
+`auto_billing_service.dart` · `billing_notification_service.dart` · `image_share_handler.dart` · `screenshot_monitor_service.dart` · Native `ShareRelayActivity.kt` · `SharedImageIngress.kt` · `ScreenshotObserver.kt` · `speech_asr_service.dart` · `bill_select_tile.dart`
 
 ---
 
@@ -353,16 +362,17 @@ Android：`ScreenshotObserver`（MediaStore）。iOS：仅快捷指令引导。
 
 ```
 已测通 → 确认（建议先导出）→ 拉 piggy_workspace.json
-  → 合并 → 预览（目录/账本/账单：增改删）→ 写云 + apply 本机
+  → 合并 → 预览（目录/账本/账单；疑似重复可选保留/合并）→ 写云 + apply 本机
 ```
 
-**次序：** 分类对齐（支/收分开，UUID→同名折；落树：新增主→子变主→改挂→新增子→主变子→删）→ 标签 → 账本同名折合（改写指纹中账本 UUID）→ 账单指纹合并。分类/标签按**名称**挂回。载荷禁带本机自增 id。
+**次序：** 分类对齐（支/收分开，UUID→同名折；落树：新增主→子变主→改挂→新增子→主变子→删）→ 标签 → 账本同名折合（改写指纹中账本 UUID）→ 账单按身份合并。分类/标签按**名称**挂回。载荷禁带本机自增 id。
 
-**指纹：** 账本 UUID + 金额到分 + 时间到秒。改金额/时间换身份；改分类/账本名不换。
+**指纹：** 账本 UUID + 金额到分 + 时间到秒；改金额/时间换指纹不换身份。本机存活账单禁止同指纹。同步预览对「不同身份、相同指纹」可选合并或保留；合并整条 LWW，落败留墓碑（ADR-044）。
 
 ### 关键规则
 
 - 冲突：较晚改动整条覆盖  
+- 账单墓碑超过 90 天：写云前裁掉，本机同步时硬删  
 - 不同步：自定义图标、家庭共账、云上可读 CSV  
 - 曾用「当前账本 CSV 上传下载」当同步 → **已废止**（ADR-042）；拆页与已测通仍有效（ADR-041）  
 - S3：简化 Bearer，非 SigV4 → 测试用 **WebDAV**  
@@ -413,18 +423,20 @@ Android：`ScreenshotObserver`（MediaStore）。iOS：仅快捷指令引导。
 
 | 规格 | 布局与点击 |
 |---|---|
-| 小 | 圆点+「今日支出」+眼睛；底栏本月收支均分无竖线；整卡（除眼）→ 记支出；约 2×2 |
-| 中 | 今日支出\|收入 +「+」记支出 + 近 7 日柱（无数据也固定柱轨）；满行×高 2；按槽重渲 |
+| 小 | 圆点+「今日支出」+眼睛；底栏本月收支均分无竖线（标签 8）；整卡（除眼）→ 记支出；约 2×2 |
+| 中 | 今日支出\|收入 +「+」记支出 + 近 7 日柱贴底、固定高度（约 52，紧凑 40；无数据也固定柱轨）；满行×高 2；按槽重渲 |
+
+**小号本月金额：** `<1k` 为 `¥`+整数；`[1k,1w)` 为 `¥x.xxk`；`≥1w` 为 `¥x.xxw`（档内截断两位）。今日支出仍完整两位小数。见 `formatWidgetMoneyCompact`。
 
 **中号热区（ADR-024；019 半卡已废）：** 今日文案→仅明细；柱→报表自定义近 7 日；「+」→记支出。勿做左右半卡分记收支。
 
-仿毛玻璃 ~85% 不透明。眼睛 44dp：小=整卡右上，中=**支出栏右上**；隐藏金额 `****`，柱压等高点。刷新：保存/回前台/~30分/每日0:00；添加时进程在则立刻重渲。
+仿毛玻璃 ~85% 不透明。眼睛 44dp：小=整卡右上，中=**支出栏右上**；隐藏金额 `****`，柱压等高点。刷新：保存/回前台/~30分/每日0:00；添加时进程在则立刻重渲。眼睛切换走后台就地重渲；写 `glance_privacy_toggled_at` 后 3s 内跳过主进程全量重渲（防二次闪烁）。
 
-渲图 → `home_widget` → RemoteViews（`fitCenter`；禁 `setScaleType`）。旧图保留至新图就绪。深链 `piggycount://`；关 Flutter 默认深链；与图标同 `MainActivity`（禁空 taskAffinity）。冷启白猪；勿 PendingIntent `splashScreenStyle=ICON`。
+渲图 → `home_widget` → RemoteViews（`fitCenter`；禁 `setScaleType`）。旧图保留至新图就绪。深链 `piggycount://`；关 Flutter 默认深链；与图标同 `MainActivity`（禁空 taskAffinity）。**桌面图标**冷启白猪；小组件经 `WidgetRelayActivity` 中转，冷/热均零启动页（冷启可接受短暂浅色等待）。
 
 ### 代码
 
-`lib/widget/*` · `app_link_service.dart` · `Glance*WidgetProvider.kt` · `WidgetLaunch.kt` · `widget_management_page.dart` · `drawable-nodpi/widget_preview_glance*.png`
+`lib/widget/*` · `app_link_service.dart` · `Glance*WidgetProvider.kt` · `WidgetRefreshBridge.kt` · `WidgetLaunch.kt` · `WidgetRelayActivity.kt` · `widget_management_page.dart` · `drawable-nodpi/widget_preview_glance*.png`
 
 ---
 
@@ -438,9 +450,9 @@ Android：`ScreenshotObserver`（MediaStore）。iOS：仅快捷指令引导。
 
 ### 怎么跑
 
-关于页入口（与使用教程同级）。关键节点 + 未捕获异常；48h + ≤1000 条。
+关于页入口（与使用教程同级）。关键节点 + 未捕获异常；48h + ≤2000 条。
 
-**节点域：** 启动失败；AI/测连失败与未就绪；云同步；CSV；截图/分享/拍照选图失败。普通记账成功不打点。禁写 Key/Secret/整份 CSV。
+**节点域：** 启动失败；AI/测连失败与未就绪；云同步；CSV；截图/分享/拍照选图失败；**截图稳定期关键节点**（tag `Screenshot`：开始等待 / 变动重置 / 删除取消 / 静止入账）。普通记账成功不打点。禁写 Key/Secret/整份 CSV。
 
 导出：Android `Download/PiggyCount/`；iOS 分享。教程本轮不介绍日志。教程在关于页内可展开章节。
 
@@ -458,7 +470,7 @@ Android：`ScreenshotObserver`（MediaStore）。iOS：仅快捷指令引导。
 | 启动 | `splash_icon.png`（~66% 居中）；**勿**拿 app_icon 直接做 Android 12+ 圆裁；放大桌面猪时勿顺手再生启动图 |
 | 明细顶栏 | `piggyCount` 小图标 |
 
-生成：`flutter_launcher_icons` · `tool/gen_splash_icon.py` · `flutter_native_splash`。主题 `icon_preferred` 保证冷启白猪。
+生成：`flutter_launcher_icons` · `tool/gen_splash_icon.py` · `flutter_native_splash`。主题 `icon_preferred` 保证**桌面图标**冷启白猪。
 
 ---
 
@@ -480,7 +492,7 @@ Android：`ScreenshotObserver`（MediaStore）。iOS：仅快捷指令引导。
 2. S3 非 SigV4 → 用 WebDAV  
 3. 同步先写云再 apply  
 4. 截图自动 = 读图 + Vision 直存（默认关）  
-5. 改金额/时间换指纹  
+5. 改金额/时间换指纹（不换身份；旧指纹当身份会裂账，见 ADR-044）  
 6. 无 ProGuard，勿贸然 minify  
 7. Schema v9 大库升级可能慢  
 8. 双端 applicationId 字符串不一致  
@@ -538,3 +550,7 @@ flutter build apk --release --split-per-abi
 | 033 / 037 | 报表三卡；环 Top8；浮动球 | |
 | 039 / 0039 / 040 | 备注层 / 播种一次 / 弹层限高 | 039≠0039 |
 | 041 / 042 / 043 | 拆页；工作区合并；映射自动/忽略 | |
+| 044 | 账单身份与指纹分离 | 身份 UUID；指纹去重；预览折合；墓碑 90 天 |
+| 045 | 截图稳定期 | 默认 2s 自最近变更起算；重置/删除取消；稳定期前不入已处理集；仅 Android 截图自动 |
+| 046 | 用户可见统计排除墓碑 | 报表/小组件/AI 只计存活；删除确认「删除后不可恢复」 |
+| 047 | AI 分类消歧 | Prompt 主类分组 +「主类-子类」；匹配兼容裸名；展示仍裸名 |

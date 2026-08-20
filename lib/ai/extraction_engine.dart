@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'ai_provider_config.dart';
 import 'ai_provider_store.dart';
+import 'ai_vision_failure.dart';
 import 'bill_info.dart';
 import 'extraction_context.dart';
 import 'json_response_parser.dart';
@@ -57,6 +59,61 @@ class AiExtractionEngine {
       mimeType: mimeType,
     );
     return _parser.parse(raw);
+  }
+
+  static const _networkRetryDelay = Duration(seconds: 3);
+
+  /// 后台直存：网络失败 3s 重试 1 次；仍失败或非网络失败则换下一个已测通视觉服务商。
+  Future<List<BillInfo>> extractFromImageWithFallback({
+    required Uint8List imageBytes,
+    required AiExtractionContext context,
+    String mimeType = 'image/jpeg',
+  }) async {
+    final providers = await _store.listVisionFallbackProviders();
+    if (providers.isEmpty) {
+      throw AiCapabilityNotReadyException(
+        '未绑定「图片理解」服务商，请到「我的 → AI 设置」配置',
+      );
+    }
+
+    final prompt = _prompts.build(
+      context: context,
+      inputSource: '分析支付账单截图，从中',
+      billGuard: PromptBuilder.billGuardForImage,
+    );
+
+    Object? lastError;
+    for (final provider in providers) {
+      for (var attempt = 0; attempt < 2; attempt++) {
+        if (attempt == 1) {
+          final prev = lastError;
+          if (prev == null || !isAiTransportFailure(prev)) break;
+          await Future<void>.delayed(_networkRetryDelay);
+        }
+        try {
+          final raw = await _client.vision(
+            provider: provider,
+            imageBytes: imageBytes,
+            prompt: prompt,
+            mimeType: mimeType,
+          );
+          return _parser.parse(raw);
+        } catch (e) {
+          lastError = e;
+          if (!isAiTransportFailure(e)) break;
+        }
+      }
+    }
+
+    final err = lastError;
+    final kind = err != null && isAiTransportFailure(err)
+        ? AiVisionFailureKind.transport
+        : AiVisionFailureKind.api;
+    throw AiVisionExhaustedException(
+      kind: kind,
+      message: err == null ? '识别失败' : aiVisionErrorMessage(err),
+      providersAttempted: providers.length,
+    );
   }
 
   /// 自由对话（账单分析等）。

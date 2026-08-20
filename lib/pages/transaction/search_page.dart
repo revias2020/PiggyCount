@@ -520,7 +520,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('批量删除'),
-        content: Text('确定删除选中的 $count 笔账单？'),
+        content: Text('确定删除选中的 $count 笔账单？删除后不可恢复。'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
           TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('删除')),

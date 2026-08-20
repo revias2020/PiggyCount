@@ -6,8 +6,8 @@ import android.content.Intent
 import android.net.Uri
 
 /**
- * 小组件打开主界面：打进同一 singleTask，避免另起任务（ADR-027）。
- * 不额外强制启动白猪：冷启走系统 Splash，热启直接进界面。
+ * 小组件打开主界面：经透明 [WidgetRelayActivity] 中转（ADR-027）。
+ * 冷/热启动均不得出现启动页；冷启可接受 NormalTheme 下短暂浅色等待。
  */
 internal object WidgetLaunch {
     fun activityPendingIntent(
@@ -15,14 +15,10 @@ internal object WidgetLaunch {
         requestCode: Int,
         url: String,
     ): PendingIntent {
-        val intent = Intent(context, MainActivity::class.java).apply {
+        val intent = Intent(context, WidgetRelayActivity::class.java).apply {
             action = Intent.ACTION_VIEW
             data = Uri.parse(url)
-            addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP,
-            )
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         return PendingIntent.getActivity(
             context,

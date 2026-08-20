@@ -40,18 +40,32 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            <!-- 系统分享图片到小猪记账 -->
-            <intent-filter>
-                <action android:name="android.intent.action.SEND"/>
-                <category android:name="android.intent.category.DEFAULT"/>
-                <data android:mimeType="image/*"/>
-            </intent-filter>
-            <!-- 桌面小组件深链 piggycount://new?type= -->
+            <!-- 外部深链 piggycount://（adb 等）；小组件点击走 WidgetRelayActivity -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="piggycount"/>
+            </intent-filter>
+        </activity>
+        <!-- 小组件点击：透明中转，冷/热均不闪 MainActivity 启动页 -->
+        <activity
+            android:name=".WidgetRelayActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@style/Theme.Piggy.ShareRelay"/>
+        <!-- 系统分享图片：透明中转，热启不闪 MainActivity 启动页 -->
+        <activity
+            android:name=".ShareRelayActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@style/Theme.Piggy.ShareRelay">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="image/*"/>
             </intent-filter>
         </activity>
         <!-- 分类自定义图标裁剪（image_cropper / uCrop） -->

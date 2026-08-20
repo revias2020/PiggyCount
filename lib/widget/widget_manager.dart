@@ -49,8 +49,10 @@ class WidgetManager {
 
       final todayExpense = formatWidgetMoney(glance.todayExpenseTotal);
       final todayIncome = formatWidgetMoney(glance.todayIncomeTotal);
-      final monthExpense = formatWidgetMoney(glance.monthExpenseTotal);
-      final monthIncome = formatWidgetMoney(glance.monthIncomeTotal);
+      final monthExpense =
+          formatWidgetMoneyCompact(glance.monthExpenseTotal);
+      final monthIncome =
+          formatWidgetMoneyCompact(glance.monthIncomeTotal);
       final daysJson = glance.last7DaysJson();
 
       await WidgetPrivacy.saveCache(

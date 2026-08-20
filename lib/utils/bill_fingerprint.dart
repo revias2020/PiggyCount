@@ -1,6 +1,6 @@
 import 'happened_at.dart';
 
-/// 账单指纹：账本 UUID + 金额（到分）+ 账单时间（到秒）。ADR-042。
+/// 账单指纹：账本 UUID + 金额（到分）+ 账单时间（到秒）。用于去重，不是跨设备身份。ADR-044。
 abstract final class BillFingerprint {
   /// 拼指纹字符串（稳定、可比较）。
   static String build({

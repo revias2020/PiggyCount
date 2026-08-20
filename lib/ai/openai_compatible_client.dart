@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -5,6 +6,7 @@ import 'package:http/http.dart' as http;
 
 import '../services/system/logger_service.dart';
 import 'ai_provider_config.dart';
+import 'ai_vision_failure.dart';
 
 /// OpenAI 兼容 Chat Completions（智谱与自定义共用）。
 class OpenAiCompatibleClient {
@@ -222,12 +224,17 @@ class OpenAiCompatibleClient {
           )
           .timeout(timeout);
     } on http.ClientException catch (e) {
-      // Client 被 cancelTests close 时常见
-      if (e.message.contains('closed') || e.message.contains('Connection')) {
+      // 测连专用 Client 被 cancelTests close 时常见
+      if (httpClient != null &&
+          (e.message.contains('closed') ||
+              e.message.contains('Client is closed'))) {
         throw AiTestCancelledException();
       }
       logger.error('AI', '网络异常 model=$model', e);
-      rethrow;
+      throw AiTransportException(e.message);
+    } on TimeoutException catch (e) {
+      logger.error('AI', '请求超时 model=$model', e);
+      throw AiTransportException('请求超时');
     }
 
     // 部分厂商错误体为 UTF-8 但未声明 charset，response.body 会按 Latin-1 乱码。
@@ -238,7 +245,12 @@ class OpenAiCompatibleClient {
       logger.error('AI', 'HTTP ${response.statusCode} model=$model');
       throw AiClientException(msg);
     }
-    final decoded = jsonDecode(responseText) as Map<String, dynamic>;
+    late final Map<String, dynamic> decoded;
+    try {
+      decoded = jsonDecode(responseText) as Map<String, dynamic>;
+    } catch (e) {
+      throw AiClientException('AI 响应不是合法 JSON');
+    }
     final choices = decoded['choices'];
     if (choices is! List || choices.isEmpty) {
       throw AiClientException('AI 响应无 choices');

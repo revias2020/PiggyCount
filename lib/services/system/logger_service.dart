@@ -94,13 +94,13 @@ String sanitizeLogText(String input) {
   return s;
 }
 
-/// 程序日志服务：内存队列 + SharedPreferences；约 48h、最多 1000 条（ADR-014）。
+/// 程序日志服务：内存队列 + SharedPreferences；约 48h、最多 2000 条（ADR-014）。
 class LoggerService {
   LoggerService._();
 
   static const _storageKey = 'piggy_app_logs';
   static const _maxStorageHours = 48;
-  static const _maxLogs = 1000;
+  static const _maxLogs = 2000;
 
   final Queue<LogEntry> _logs = Queue<LogEntry>();
   final List<VoidCallback> _listeners = [];

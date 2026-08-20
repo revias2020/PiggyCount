@@ -4,6 +4,7 @@ import '../data/app_database.dart';
 import '../data/repositories/ledger_repository.dart';
 import '../data/repositories/tag_repository.dart';
 import '../utils/happened_at.dart';
+import 'workspace_merge.dart';
 import 'workspace_models.dart';
 
 /// 本机工作区 ↔ 同步快照。
@@ -93,6 +94,7 @@ class WorkspaceStore {
       bills: [
         for (final tx in txs)
           SyncBill(
+            syncId: tx.syncId,
             fingerprint: tx.fingerprint,
             ledgerSyncId: ledgerById[tx.ledgerId]?.syncId ?? '',
             type: tx.type,
@@ -121,7 +123,7 @@ class WorkspaceStore {
     return '';
   }
 
-  /// 把合并结果写入本机。按同步身份/指纹 upsert，含墓碑。
+  /// 把合并结果写入本机。按同步身份 upsert，含墓碑；并硬删过期账单墓碑。
   Future<void> apply(WorkspaceSnapshot snap) async {
     await _db.transaction(() async {
       await _applyGroups(snap.tagGroups);
@@ -322,7 +324,7 @@ class WorkspaceStore {
         .get();
     final tagIdByName = {for (final t in tags) t.name: t.id};
     final existing = await _db.select(_db.transactions).get();
-    final byFp = {for (final e in existing) e.fingerprint: e};
+    final bySync = {for (final e in existing) e.syncId: e};
 
     int? categoryId(SyncBill bill) {
       final name = bill.categoryName;
@@ -336,7 +338,7 @@ class WorkspaceStore {
     for (final item in items) {
       final lid = ledgerId[item.ledgerSyncId];
       if (lid == null) continue;
-      final row = byFp[item.fingerprint];
+      final row = bySync[item.syncId];
       if (row == null) {
         final id = await _db.into(_db.transactions).insert(
               TransactionsCompanion.insert(
@@ -344,7 +346,7 @@ class WorkspaceStore {
                 type: item.type,
                 amount: item.amount,
                 happenedAt: HappenedAt.toSecond(item.happenedAt),
-                syncId: item.fingerprint,
+                syncId: item.syncId,
                 fingerprint: item.fingerprint,
                 categoryId: Value(categoryId(item)),
                 note: Value(item.note),
@@ -374,10 +376,10 @@ class WorkspaceStore {
       }
     }
 
-    final keep = {for (final item in items) item.fingerprint};
+    final keep = {for (final item in items) item.syncId};
     final now = HappenedAt.now();
     for (final row in existing) {
-      if (keep.contains(row.fingerprint) || row.deletedAt != null) continue;
+      if (keep.contains(row.syncId) || row.deletedAt != null) continue;
       await (_db.update(_db.transactions)..where((t) => t.id.equals(row.id)))
           .write(
         TransactionsCompanion(
@@ -385,6 +387,19 @@ class WorkspaceStore {
           updatedAt: Value(now),
         ),
       );
+    }
+
+    final latest = await _db.select(_db.transactions).get();
+    for (final row in latest) {
+      if (row.deletedAt == null) continue;
+      if (now.difference(row.deletedAt!) <= WorkspaceMerge.billTombRetention) {
+        continue;
+      }
+      await (_db.delete(_db.transactionTags)
+            ..where((t) => t.transactionId.equals(row.id)))
+          .go();
+      await (_db.delete(_db.transactions)..where((t) => t.id.equals(row.id)))
+          .go();
     }
   }
 

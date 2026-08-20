@@ -7,6 +7,9 @@ enum BillingNotificationAction {
 }
 
 /// 自动记账进度/结果本地通知。
+///
+/// Android：进度与结果分渠道——进度默认重要度（不横幅）；结果高重要度横幅且无声无震。
+/// 结果渠道用新 id，避免已安装用户无法抬高旧渠道等级。
 class BillingNotificationService {
   BillingNotificationService();
 
@@ -14,7 +17,8 @@ class BillingNotificationService {
       FlutterLocalNotificationsPlugin();
   bool _ready = false;
 
-  static const _channelId = 'piggy_auto_billing';
+  static const _progressChannelId = 'piggy_auto_billing';
+  static const _resultChannelId = 'piggy_auto_billing_result';
   static const progressId = 1001;
   static const resultId = 1101;
 
@@ -39,10 +43,20 @@ class BillingNotificationService {
         AndroidFlutterLocalNotificationsPlugin>();
     await androidPlugin?.createNotificationChannel(
       const AndroidNotificationChannel(
-        _channelId,
-        '智能记账',
-        description: '截图/分享识别进度与结果',
+        _progressChannelId,
+        '智能记账进度',
+        description: '截图/分享识别进行中',
         importance: Importance.defaultImportance,
+      ),
+    );
+    await androidPlugin?.createNotificationChannel(
+      const AndroidNotificationChannel(
+        _resultChannelId,
+        '智能记账结果',
+        description: '截图/分享识别结果（横幅、无声）',
+        importance: Importance.high,
+        playSound: false,
+        enableVibration: false,
       ),
     );
     _ready = true;
@@ -83,9 +97,9 @@ class BillingNotificationService {
         body: body,
         notificationDetails: const NotificationDetails(
           android: AndroidNotificationDetails(
-            _channelId,
-            '智能记账',
-            channelDescription: '截图/分享识别进度与结果',
+            _progressChannelId,
+            '智能记账进度',
+            channelDescription: '截图/分享识别进行中',
             importance: Importance.defaultImportance,
             priority: Priority.defaultPriority,
           ),
@@ -110,15 +124,17 @@ class BillingNotificationService {
         id: resultId,
         title: title,
         body: body,
-        notificationDetails: NotificationDetails(
+        notificationDetails: const NotificationDetails(
           android: AndroidNotificationDetails(
-            _channelId,
-            '智能记账',
-            channelDescription: '截图/分享识别进度与结果',
+            _resultChannelId,
+            '智能记账结果',
+            channelDescription: '截图/分享识别结果（横幅、无声）',
             importance: Importance.high,
             priority: Priority.high,
+            playSound: false,
+            enableVibration: false,
           ),
-          iOS: const DarwinNotificationDetails(),
+          iOS: DarwinNotificationDetails(),
         ),
         payload: success ? payloadSuccess : payloadFailure,
       );

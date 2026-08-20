@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
@@ -12,12 +11,12 @@ import android.util.Log
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import java.io.File
 
 /**
- * 主 Activity：截图 MediaStore 监听 + 系统分享图片入账。
+ * 主 Activity：截图 MediaStore 监听 + 接收 [ShareRelayActivity] / [WidgetRelayActivity] 转发。
  *
  * launchMode=singleTask，保证热启动分享 / 小组件深链走 [onNewIntent]（ADR-027）。
+ * 分享、小组件均经透明中转，避免热启再走 LaunchTheme。
  */
 class MainActivity : FlutterFragmentActivity() {
     companion object {
@@ -32,13 +31,18 @@ class MainActivity : FlutterFragmentActivity() {
     private var widgetRefreshReceiver: BroadcastReceiver? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        if (intent.getBooleanExtra(WidgetRelayActivity.EXTRA_SKIP_LAUNCH_SPLASH, false)) {
+            setTheme(R.style.NormalTheme)
+        }
         super.onCreate(savedInstanceState)
+        Log.i(TAG, "onCreate action=${intent?.action}")
         handleSharedImage(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        Log.i(TAG, "onNewIntent action=${intent.action}")
         handleSharedImage(intent)
     }
 
@@ -87,19 +91,20 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     private fun handleSharedImage(intent: Intent?) {
-        if (intent?.action != Intent.ACTION_SEND) return
-        if (intent.type?.startsWith("image/") != true) return
-
-        val uri: Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            intent.getParcelableExtra(Intent.EXTRA_STREAM)
+        // 优先：ShareRelay 已拷好的路径（热启走 onNewIntent，冷启走 onCreate）
+        SharedImageIngress.pathFromIntent(intent)?.let { path ->
+            pendingSharedPath = path
+            Log.i(TAG, "shared image path: $path")
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                notifyShared(path)
+            }, 500)
+            return
         }
-        if (uri == null) return
 
+        // 兼容：若仍有 ACTION_SEND 直达（旧入口 / 调试）
+        val uri = SharedImageIngress.imageUriFromSend(intent) ?: return
         try {
-            val path = copySharedToTemp(uri) ?: return
+            val path = SharedImageIngress.copyToCache(this, uri) ?: return
             pendingSharedPath = path
             Log.i(TAG, "shared image saved: $path")
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
@@ -108,17 +113,6 @@ class MainActivity : FlutterFragmentActivity() {
         } catch (e: Exception) {
             Log.e(TAG, "handleSharedImage failed", e)
         }
-    }
-
-    private fun copySharedToTemp(uri: Uri): String? {
-        val input = contentResolver.openInputStream(uri) ?: return null
-        val dir = File(cacheDir, "shared_images")
-        dir.mkdirs()
-        val out = File(dir, "shared_${System.currentTimeMillis()}.jpg")
-        input.use { inp ->
-            out.outputStream().use { o -> inp.copyTo(o) }
-        }
-        return out.absolutePath
     }
 
     private fun notifyShared(path: String) {
@@ -171,10 +165,16 @@ class MainActivity : FlutterFragmentActivity() {
 
     private fun startScreenshotObserver(engine: FlutterEngine) {
         stopScreenshotObserver()
-        screenshotObserver = ScreenshotObserver(this) { path ->
-            MethodChannel(engine.dartExecutor.binaryMessenger, SCREENSHOT_CHANNEL)
-                .invokeMethod("onScreenshotDetected", path)
-        }
+        val channel = MethodChannel(engine.dartExecutor.binaryMessenger, SCREENSHOT_CHANNEL)
+        screenshotObserver = ScreenshotObserver(
+            this,
+            onScreenshotDetected = { path ->
+                channel.invokeMethod("onScreenshotDetected", path)
+            },
+            onSettleLog = { message ->
+                channel.invokeMethod("onScreenshotSettleLog", message)
+            },
+        )
         val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
         } else {
@@ -190,6 +190,7 @@ class MainActivity : FlutterFragmentActivity() {
                 contentResolver.unregisterContentObserver(it)
             } catch (_: Exception) {
             }
+            it.dispose()
             screenshotObserver = null
         }
     }

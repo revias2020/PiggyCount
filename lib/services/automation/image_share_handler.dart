@@ -4,6 +4,7 @@ import 'auto_billing_service.dart';
 
 /// 系统分享图片入账：冷/热启动均由原生写入临时文件后经 MethodChannel 通知。
 ///
+/// Android 热启动经透明 ShareRelayActivity 转发，避免主界面再闪启动页。
 /// 始终走后台智能记账（通知 + 自动落库），不打开确认弹层（ADR-018）。
 class ImageShareHandler {
   ImageShareHandler({

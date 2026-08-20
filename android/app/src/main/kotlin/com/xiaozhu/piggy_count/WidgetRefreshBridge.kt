@@ -21,14 +21,22 @@ object WidgetRefreshBridge {
     const val KEY_MEDIUM_WIDTH_DP = "glance_medium_width_dp"
     const val KEY_MEDIUM_HEIGHT_DP = "glance_medium_height_dp"
 
+    /** 与 Dart [WidgetPrivacy.privacyToggledAtKey] 同键；HomeWidgetPreferences。 */
+    private const val KEY_PRIVACY_TOGGLED_AT = "glance_privacy_toggled_at"
+
+    /** 隐私就地重渲后，跳过主进程全量重渲的窗口（防 ~1s 二次闪烁）。 */
+    private const val PRIVACY_SUPPRESS_MS = 3000L
+
     private const val FALLBACK_MEDIUM_W = 360
     private const val FALLBACK_MEDIUM_H = 152
+
+    private fun prefs(context: Context) =
+        context.getSharedPreferences("HomeWidgetPreferences", Context.MODE_PRIVATE)
 
     fun saveMediumSlotSize(context: Context, options: Bundle?) {
         val (w, h) = resolveSlotDp(options, FALLBACK_MEDIUM_W, FALLBACK_MEDIUM_H)
         try {
-            context
-                .getSharedPreferences("HomeWidgetPreferences", Context.MODE_PRIVATE)
+            prefs(context)
                 .edit()
                 .putInt(KEY_MEDIUM_WIDTH_DP, w)
                 .putInt(KEY_MEDIUM_HEIGHT_DP, h)
@@ -39,13 +47,36 @@ object WidgetRefreshBridge {
         }
     }
 
+    /**
+     * 进程内存活时请求 Flutter 全量重渲（添加 / 改尺寸）。
+     * 眼睛隐私切换已由后台 isolate 就地重渲，窗口内不再请求，避免二次闪烁。
+     */
     fun requestFlutterRefresh(context: Context) {
+        if (wasPrivacyToggledRecently(context)) {
+            Log.i(TAG, "skip Flutter refresh: recent privacy toggle")
+            return
+        }
         try {
             context.sendBroadcast(
                 Intent(ACTION_REFRESH).setPackage(context.packageName),
             )
         } catch (e: Exception) {
             Log.e(TAG, "requestFlutterRefresh failed", e)
+        }
+    }
+
+    private fun wasPrivacyToggledRecently(context: Context): Boolean {
+        return try {
+            val raw = prefs(context).all[KEY_PRIVACY_TOGGLED_AT] ?: return false
+            val at = when (raw) {
+                is Long -> raw
+                is Int -> raw.toLong()
+                else -> return false
+            }
+            at > 0L && System.currentTimeMillis() - at < PRIVACY_SUPPRESS_MS
+        } catch (e: Exception) {
+            Log.e(TAG, "wasPrivacyToggledRecently failed", e)
+            false
         }
     }
 

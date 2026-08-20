@@ -34,6 +34,19 @@ class AiBookkeeper {
     );
   }
 
+  /// 后台直存：重试 + 服务商回退（仅截图自动 / 分享入账）。
+  Future<List<BillInfo>> fromImageWithFallback(
+    Uint8List bytes, {
+    String mimeType = 'image/jpeg',
+  }) async {
+    final ctx = await creation.buildContext();
+    return engine.extractFromImageWithFallback(
+      imageBytes: bytes,
+      context: ctx,
+      mimeType: mimeType,
+    );
+  }
+
   /// 确认后批量落库；返回成功写入的交易 id。
   Future<List<int>> saveBills({
     required List<BillInfo> bills,

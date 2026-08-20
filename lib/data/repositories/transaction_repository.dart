@@ -616,13 +616,15 @@ class TransactionRepository {
       amount: amount,
       happenedAt: at,
     );
-    final clash = await (_db.select(_db.transactions)
-          ..where((t) => t.fingerprint.equals(fp))
-          ..where((t) => t.deletedAt.isNull())
-          ..where((t) => t.id.isNotValue(id)))
-        .get();
-    if (clash.isNotEmpty) {
-      throw StateError('已存在相同账本、金额与时间的账单');
+    if (fp != existing.fingerprint) {
+      final clash = await (_db.select(_db.transactions)
+            ..where((t) => t.fingerprint.equals(fp))
+            ..where((t) => t.deletedAt.isNull())
+            ..where((t) => t.id.isNotValue(id)))
+          .get();
+      if (clash.isNotEmpty) {
+        throw StateError('已存在相同账本、金额与时间的账单');
+      }
     }
     final now = HappenedAt.now();
     await _db.transaction(() async {
