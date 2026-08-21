@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
+import androidx.activity.OnBackPressedCallback
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -17,12 +18,16 @@ import io.flutter.plugin.common.MethodChannel
  *
  * launchMode=singleTask，保证热启动分享 / 小组件深链走 [onNewIntent]（ADR-027）。
  * 分享、小组件均经透明中转，避免热启再走 LaunchTheme。
+ *
+ * 后台直存进行中：[setRetainOnBack] 使返回键 [moveTaskToBack] 而非 finish，
+ * 避免分享后回到截图编辑时拆掉 Flutter 引擎导致识别静默中断。
  */
 class MainActivity : FlutterFragmentActivity() {
     companion object {
         private const val TAG = "PiggyMain"
         const val SCREENSHOT_CHANNEL = "com.xiaozhu.piggy_count/screenshot"
         const val SHARE_CHANNEL = "com.xiaozhu.piggy_count/share"
+        const val ACTIVITY_CHANNEL = "com.xiaozhu.piggy_count/activity"
     }
 
     private var screenshotObserver: ScreenshotObserver? = null
@@ -30,11 +35,20 @@ class MainActivity : FlutterFragmentActivity() {
     private var flutterEngineRef: FlutterEngine? = null
     private var widgetRefreshReceiver: BroadcastReceiver? = null
 
+    /** 后台直存进行中：返回键送后台，不销毁。 */
+    private val retainOnBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            Log.i(TAG, "retainOnBack → moveTaskToBack")
+            moveTaskToBack(true)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         if (intent.getBooleanExtra(WidgetRelayActivity.EXTRA_SKIP_LAUNCH_SPLASH, false)) {
             setTheme(R.style.NormalTheme)
         }
         super.onCreate(savedInstanceState)
+        onBackPressedDispatcher.addCallback(this, retainOnBackCallback)
         Log.i(TAG, "onCreate action=${intent?.action}")
         handleSharedImage(intent)
     }
@@ -72,6 +86,24 @@ class MainActivity : FlutterFragmentActivity() {
                         val path = pendingSharedPath
                         pendingSharedPath = null
                         result.success(path)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, ACTIVITY_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "setRetainOnBack" -> {
+                        val enabled = call.arguments as? Boolean ?: false
+                        retainOnBackCallback.isEnabled = enabled
+                        Log.i(TAG, "setRetainOnBack=$enabled")
+                        result.success(null)
+                    }
+                    "moveTaskToBack" -> {
+                        Log.i(TAG, "moveTaskToBack")
+                        moveTaskToBack(true)
+                        result.success(null)
                     }
                     else -> result.notImplemented()
                 }
@@ -170,6 +202,18 @@ class MainActivity : FlutterFragmentActivity() {
             this,
             onScreenshotDetected = { path ->
                 channel.invokeMethod("onScreenshotDetected", path)
+            },
+            onScreenshotProgress = { path ->
+                channel.invokeMethod("onScreenshotProgress", path)
+            },
+            onScreenshotSuperseded = { oldPath, newPath ->
+                channel.invokeMethod(
+                    "onScreenshotSuperseded",
+                    mapOf("oldPath" to oldPath, "newPath" to newPath),
+                )
+            },
+            onScreenshotCancelled = { path ->
+                channel.invokeMethod("onScreenshotCancelled", path)
             },
             onSettleLog = { message ->
                 channel.invokeMethod("onScreenshotSettleLog", message)

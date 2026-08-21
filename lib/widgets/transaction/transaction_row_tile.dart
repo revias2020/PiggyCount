@@ -7,6 +7,7 @@ import '../../pages/transaction/category_detail_page.dart';
 import '../../pages/transaction/record_editor_sheet.dart';
 import '../../pages/transaction/tag_detail_page.dart';
 import '../../providers/database_provider.dart';
+import '../../providers/pending_review_providers.dart';
 import '../../providers/transaction_providers.dart';
 import '../../styles/tokens.dart';
 import '../../utils/money_format.dart';
@@ -24,6 +25,7 @@ class TransactionRowTile extends ConsumerWidget {
     this.selected = false,
     this.onToggleSelect,
     this.enableLongPressDelete = false,
+    this.pendingHighlight = false,
   });
 
   final TransactionListItem item;
@@ -33,6 +35,8 @@ class TransactionRowTile extends ConsumerWidget {
   final VoidCallback? onToggleSelect;
   /// 明细页：长按确认后删除（ADR-036 修订，原左滑删已退役）。
   final bool enableLongPressDelete;
+  /// 待核对高亮（ADR-050）：蓝描边 + 极浅蓝底。
+  final bool pendingHighlight;
 
   void _openCategoryDetail(BuildContext context, WidgetRef ref) {
     final month = ref.read(detailsMonthProvider);
@@ -88,7 +92,9 @@ class TransactionRowTile extends ConsumerWidget {
         ) ??
         false;
     if (!confirmed || !context.mounted) return;
+    final syncId = item.tx.syncId;
     await ref.read(transactionRepositoryProvider).delete(item.tx.id);
+    await ref.read(pendingReviewProvider.notifier).removeIfPresent(syncId);
   }
 
   @override
@@ -101,11 +107,15 @@ class TransactionRowTile extends ConsumerWidget {
     final hasNote = note != null && note.isNotEmpty;
     final timeText = DateFormat('HH:mm').format(tx.happenedAt);
     final tags = item.tags;
-    final fadeColor =
-        selected ? PigTokens.primarySoft : PigTokens.surface;
+    final highlightFill = PigTokens.primary.withValues(alpha: 0.06);
+    final fadeColor = selected
+        ? PigTokens.primarySoft
+        : (pendingHighlight ? highlightFill : PigTokens.surface);
 
-    return Material(
-      color: selected ? PigTokens.primarySoft : Colors.transparent,
+    final row = Material(
+      color: selected
+          ? PigTokens.primarySoft
+          : Colors.transparent,
       child: InkWell(
         onTap: onToggleSelect ??
             onTap ??
@@ -219,6 +229,19 @@ class TransactionRowTile extends ConsumerWidget {
           ),
         ),
       ),
+    );
+
+    if (!pendingHighlight) return row;
+
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 1),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(PigTokens.radiusCard),
+        border: Border.all(color: PigTokens.primary, width: 1.5),
+        color: highlightFill,
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: row,
     );
   }
 }

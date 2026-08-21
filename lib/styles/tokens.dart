@@ -12,21 +12,6 @@ abstract final class PigTokens {
   /// 主色浅底：选中胶囊、弱强调背景
   static const Color primarySoft = Color(0x1A2F6BFF);
 
-  /// AI 聊天页空态大圆 / 发送按钮用的紫蓝起点（悬浮球另用局部提亮色）
-  static const Color aiGradientStart = Color(0xFF6B5CFF);
-
-  /// AI 渐变终点（同上，悬浮球不共用）
-  static const Color aiGradientEnd = Color(0xFF2F6BFF);
-
-  /// AI 助手页背景渐变上沿
-  static const Color aiCanvasTop = Color(0xFFE8F0FF);
-
-  /// AI 助手页背景渐变中段
-  static const Color aiCanvasMid = Color(0xFFF3EEFF);
-
-  /// AI 次要 Chip 浅底
-  static const Color aiChipSoft = Color(0x1A6B5CFF);
-
   // --- 表面 ---
   static const Color scaffoldBackground = Color(0xFFF5F5F5);
   static const Color surface = Color(0xFFFFFFFF);

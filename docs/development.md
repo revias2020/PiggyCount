@@ -3,10 +3,10 @@
 > 与 [framework.md](./framework.md) **同一套功能维度**。本文件写实现：怎么跑、关键规则、代码落点。  
 > 用户安装见 [README.md](../README.md)。
 
-**版本：** `0.2.1+3`（公开源码 + Android 真机测试包）· 整理 2026-08-20  
+**版本：** `0.3.0+4`（公开源码 + GitHub Release `arm64-v8a` 测试包）· 整理 2026-08-21  
 升级说明见 [version.md](./version.md)。
 
-文中「ADR-xxx」仅为历史决策编号索引（附录）；规则正文已写在各功能节，仓库内不再保留 ADR / CONTEXT 原文。
+文中「ADR-xxx」为历史决策编号索引（附录）；规则正文在各功能节。领域词见仓库根 [CONTEXT.md](../CONTEXT.md)，完整 ADR 见 [docs/adr/](./adr/)。
 
 ---
 
@@ -168,9 +168,11 @@ App 启动即打开 Drift 库；新库播种出厂目录；业务经 Repository�
 
 **怎么跑：**
 
-- 一体顶栏：`piggyCount` + 标题 + 账本 ▾ + 日历 + **同步** + 搜索（本 Tab 无壳层 `AppTopBar`）  
+- 一体顶栏：`piggyCount` + 标题 + 账本 ▾ + 日历 + **同步** + **核对信封**（有待核对红点）+ 搜索（本 Tab 无壳层 `AppTopBar`）  
 - 同步钮：未已测通禁用；点即同步确认，不先开同步页  
 - 月度汇总：年月网格；收入｜支出｜结余；**不做**类型筛选  
+
+**待核对（ADR-050）：** 后台直存（`screenshot` / `share`）成功后进入待核对（`syncId`，当前账本，本机持久）。明细行 **核对高亮**（蓝描边 + 极浅蓝底）仅本次前台，进后台清除，回前台按仍待核对重打；**点高亮行 = 已看且不打开编辑**，无高亮时点行仍编辑。信封底部弹层：列表跳转、单条已看、一键已读；有待核对显示红点。成功通知进 App 滚到该笔。日历/搜索本轮不接入。
 
 **统一账单行**（明细/日历/搜索/分类明细/标签明细共用）：
 
@@ -182,7 +184,7 @@ App 启动即打开 Drift 库；新库播种出厂目录；业务经 Repository�
 
 报表构成下钻进来的分类/标签明细：带入报表周期，顶栏只读。
 
-**代码：** `details_page.dart` · `home_shell.dart` · `details_header.dart` · `transaction_row_tile.dart` · `fading_tag_chip_strip.dart` · `transaction_providers.dart`（`MonthLedgerView`）
+**代码：** `details_page.dart` · `home_shell.dart` · `details_header.dart` · `pending_review_sheet.dart` · `pending_review_providers.dart` · `transaction_row_tile.dart` · `fading_tag_chip_strip.dart` · `transaction_providers.dart`（`MonthLedgerView`）
 
 ### 5.2 记一笔
 
@@ -192,13 +194,14 @@ App 启动即打开 Drift 库；新库播种出厂目录；业务经 Repository�
 
 1. FAB 单击 → 工作台 **85%**；长按 → 真扇形（圆心=FAB 中心，半径 ~96–110，约 100°/135°/170°；收锚 + 遮罩；拖选松手）  
 2. 主层：类型、时间、金额、分类（`Expanded`）、标签入口、备注入口、**固定金额键盘**（键高 ~40–42）  
-3. 选标：次级 ~**55%**，点 chip 即生效，无单独确认  
-4. 备注：独立层 ~**36%**，仅此调系统键盘并顶起；「完成」写回；主层不上移  
-5. 新建备注旁相机：选拍照/相册 → 丢草稿关层 → Vision 确认流；编辑无相机；非附图  
+3. 时间：居中 Dialog；双输入（始终两位）+ 小时 `0–23` 网格 + 分钟每 5 分快捷；非法确定红字不关；写回保留秒（ADR-051）  
+4. 选标：次级 ~**55%**，点 chip 即生效，无单独确认  
+5. 备注：独立层 ~**36%**，仅此调系统键盘并顶起；「完成」写回；主层不上移  
+6. 新建备注旁相机：选拍照/相册 → 丢草稿关层 → Vision 确认流；编辑无相机；非附图  
 
 其它工作台高度：分类编辑 50%、标签/组 40%、主分类详情封顶 85%、选主分类列表 ~45%。sheet 透明底 + 内层白卡；禁 `useSafeArea: true`。
 
-**代码：** `record_fab.dart` · `record_editor_sheet.dart` · `amount_keypad.dart` · `workspace_sheet.dart` · `voice_billing_sheet.dart` · `image_billing_sheet.dart`
+**代码：** `record_fab.dart` · `record_editor_sheet.dart` · `record_time_picker_dialog.dart` · `amount_keypad.dart` · `workspace_sheet.dart` · `voice_billing_sheet.dart` · `image_billing_sheet.dart`
 
 ### 5.3 日历
 
@@ -216,7 +219,7 @@ App 启动即打开 Drift 库；新库播种出厂目录；业务经 Repository�
 
 ### 本节锁定
 
-ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040（及明细同步钮 ADR-042）
+ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040 / 051（及明细同步钮 ADR-042；待核对 ADR-050）
 
 ---
 
@@ -247,7 +250,7 @@ ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040（及明细同步钮 ADR-042�
 
 ### 代码
 
-`report_page.dart` · `report_providers.dart` · `report_period.dart` · `report_route_observer.dart` · `lib/widgets/report/*` · `rank_full_page.dart` · `statistics_repository.dart` · `ai_fab.dart`
+`report_page.dart` · `report_providers.dart` · `report_period.dart` · `report_route_observer.dart` · `lib/widgets/report/*` · `rank_full_page.dart` · `statistics_repository.dart`
 
 ---
 
@@ -267,7 +270,7 @@ ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040（及明细同步钮 ADR-042�
 
 - 内置智谱（名/Base 锁死）+ ≤5 OpenAI 兼容  
 - 能力绑定：文本对话 / 图片理解 各一商；仅展示该侧**测通成功**者  
-- 测连 timeout 10s；保存时未测侧会打网；失败仍落盘但留页；绑定中的自定义商禁删  
+- 测连 timeout 15s；文本识别 30s、图片识别 60s；保存时未测侧会打网；失败仍落盘但留页；绑定中的自定义商禁删  
 - M1：旧单配置迁到内置或新建自定义并双绑  
 
 **流水线：**
@@ -281,7 +284,7 @@ ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040（及明细同步钮 ADR-042�
   → BillCreationService（分类/智能选标）→ 落库
 ```
 
-文本还用于：助手、ASR 后结构化、CSV AI 映射。视觉用于：截图/分享/拍照/相册。
+文本还用于：ASR 后结构化、CSV AI 映射。视觉用于：截图/分享/拍照/相册。
 
 ### 关键规则
 
@@ -310,29 +313,29 @@ ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040（及明细同步钮 ADR-042�
 |---|---|---|
 | 手动 | FAB 单击 | 无 AI |
 | 拍照 / 图片 / 备注旁相机 | 扇形或相机 | Vision → **识别确认弹层** |
-| 语音 | 扇形 / 助手麦 | ASR → 文本结构化 → **单卡** |
-| 对话 | 报表球 | 提取 → **单卡** |
+| 语音 | 扇形 | ASR → 文本结构化 → **单卡** |
 | 截图自动 | 「我的」开关（默认关） | 通知 → Vision → **自动落库** |
 | 分享入账 | 系统分享 | 始终可收（不受截图开关）→ 同上 |
 
-**分享入账（Android）：** `ShareRelayActivity`（透明）接 `ACTION_SEND` → 拷图 → 以 `SINGLE_TOP|CLEAR_TOP|NEW_TASK` 打进 `MainActivity`。**热启动**不得出现启动页；冷启动仍走主界面 LaunchTheme。
+**分享入账（Android）：** `ShareRelayActivity`（透明）接 `ACTION_SEND` → 拷图 → 以 `SINGLE_TOP|CLEAR_TOP|NEW_TASK` 打进 `MainActivity`。**热启动**不得出现启动页；冷启动仍走主界面 LaunchTheme。收到分享后尽快 `moveTaskToBack` 回到来源 App；直存批次进行中返回键同样送后台（不 `finish`），避免拆掉 Flutter 引擎导致识别静默中断。
 
 **识别确认弹层：** 复选默认全选；确认(N)；关即丢弃；串行落库可部分成功重试；行内只读；圆标按名匹配，未命中「未分类」（勿用落库兜底类）。
 
-**后台：** `AutoBillingService` 串行；通知点击成功→明细、失败→明细+框（未点不弹）；无通知权限仍可直存。未就绪：后台失败通知引导设置；前台 Toast+去设置。
+**后台：** `AutoBillingService` 串行；通知点击成功→明细、失败→明细+框（未点不弹）；无通知权限仍可直存。未就绪：后台失败通知引导设置；前台 Toast+去设置。直存批次开始时开启返回保活，批次结束关闭。
 
-**截图稳定期（ADR-045）：** 检测到截图候选后先进入稳定期（默认 **2s**，自最近一次变更起算）。同一路径在稳定期内再次 `onChange`、`IS_PENDING` 清写、或 size 变化 → **重置计时**；期满且文件仍可读才回调 Dart。**稳定期结束前不得**入账、**不得**把路径记入 native/Dart 已处理集；稳定期内删除 → 取消。连拍：每路径独立计时，Vision 仍由 `AutoBillingService` 串行。稳定期结束后才发进度通知。分享入账、前台选图不走稳定期。
+**截图稳定期 + 替换关联窗（ADR-045 / ADR-048）：** 稳定期默认 **3s**（自该路径最近变更；同路径再 `onChange` / `IS_PENDING` / size 变 → 重置）。另有 **15s** 替换关联窗（自首次检测），处理「编辑另存新文件名 + 删原图」。稳定期满且窗内尚无第二张可发早期进度，但 **Vision/落库须过入账门闩**（关联窗满或替换/连拍判定结束）。窗内原仍在又来新图 → 短观察 **2s**（旧消失=替换，仍在=连拍）。替换后新文件只再走 3s 稳定期。删除且无后继 → 取消。稳定期/门闩前不入已处理集。连拍各路径独立；Vision 仍串行。分享入账、前台选图不走上述窗口。
 
-Android：`ScreenshotObserver`（MediaStore + 稳定期；覆盖同路径友好；另存新文件时原图仍可能入账）。iOS：仅快捷指令引导。
+Android：`ScreenshotObserver`（MediaStore + 稳定期 + 替换关联）。iOS：仅快捷指令引导。
 
 ### 关键规则
 
-- 「我的」不放选图入口；AI 助手开关不影响扇形  
+- 「我的」不放选图入口  
 - 后台日志：触发→识别→落库；前台 Vision 本轮不要求同等完整链路  
+- 报表对话助手已下线（ADR-049）；历史 `source=ai_chat` 保留不迁移  
 
 ### 代码
 
-`auto_billing_service.dart` · `billing_notification_service.dart` · `image_share_handler.dart` · `screenshot_monitor_service.dart` · Native `ShareRelayActivity.kt` · `SharedImageIngress.kt` · `ScreenshotObserver.kt` · `speech_asr_service.dart` · `bill_select_tile.dart`
+`auto_billing_service.dart` · `billing_notification_service.dart` · `image_share_handler.dart` · `screenshot_monitor_service.dart` · `android_activity_bridge.dart` · Native `ShareRelayActivity.kt` · `SharedImageIngress.kt` · `ScreenshotObserver.kt` · `MainActivity` activity channel · `speech_asr_service.dart` · `bill_select_tile.dart`
 
 ---
 
@@ -452,7 +455,7 @@ Android：`ScreenshotObserver`（MediaStore + 稳定期；覆盖同路径友好�
 
 关于页入口（与使用教程同级）。关键节点 + 未捕获异常；48h + ≤2000 条。
 
-**节点域：** 启动失败；AI/测连失败与未就绪；云同步；CSV；截图/分享/拍照选图失败；**截图稳定期关键节点**（tag `Screenshot`：开始等待 / 变动重置 / 删除取消 / 静止入账）。普通记账成功不打点。禁写 Key/Secret/整份 CSV。
+**节点域：** 启动失败；AI/测连失败与未就绪；云同步；CSV；截图/分享/拍照选图失败；**截图稳定期/关联窗关键节点**（tag `Screenshot`：开始等待 / 变动重置 / 删除取消 / 短观察 / 替换 / 进度 / 门闩入账）。普通记账成功不打点。禁写 Key/Secret/整份 CSV。
 
 导出：Android `Download/PiggyCount/`；iOS 分享。教程本轮不介绍日志。教程在关于页内可展开章节。
 
@@ -481,7 +484,7 @@ Android：`ScreenshotObserver`（MediaStore + 稳定期；覆盖同路径友好�
 | 项 | 决定 |
 |---|---|
 | 版本 | `0.1.0+1` |
-| 分发 | 公开 GitHub；APK 私下 sideload |
+| 分发 | 公开 GitHub；Release 附 `arm64-v8a` APK；本机 `venv/APK` 留 split-per-abi 全套 |
 | 平台 | Android 真机为主 |
 | 签名 | debug/自签；keystore 不进 git |
 | 包体 | `split-per-abi`；暂不开 R8 |
@@ -504,7 +507,7 @@ Android：`ScreenshotObserver`（MediaStore + 稳定期；覆盖同路径友好�
 - [ ] 账本 CRUD；记一笔全路径；日历；搜索批量  
 - [ ] 报表再显与下钻；排行全页  
 - [ ] 分类/标签清除与恢复；彩标/标签色  
-- [ ] AI 测通绑定；扇形/对话；关助手只藏球  
+- [ ] AI 测通绑定；扇形拍照/语音/图片；截图自动 / 分享入账  
 - [ ] CSV 开关关/开；WebDAV 同步预览；未测通禁用  
 - [ ] 小组件热区与深链；日志无 Key  
 
@@ -551,6 +554,10 @@ flutter build apk --release --split-per-abi
 | 039 / 0039 / 040 | 备注层 / 播种一次 / 弹层限高 | 039≠0039 |
 | 041 / 042 / 043 | 拆页；工作区合并；映射自动/忽略 | |
 | 044 | 账单身份与指纹分离 | 身份 UUID；指纹去重；预览折合；墓碑 90 天 |
-| 045 | 截图稳定期 | 默认 2s 自最近变更起算；重置/删除取消；稳定期前不入已处理集；仅 Android 截图自动 |
+| 045 | 截图稳定期 | 安静等待；结束前不入已处理集；删除可取消；仅 Android 截图自动（时长与入账时机见 **048**） |
 | 046 | 用户可见统计排除墓碑 | 报表/小组件/AI 只计存活；删除确认「删除后不可恢复」 |
 | 047 | AI 分类消歧 | Prompt 主类分组 +「主类-子类」；匹配兼容裸名；展示仍裸名 |
+| 048 | 截图替换关联窗 | 稳定期 3s + 关联窗 15s；进度可早、落库门闩晚；短观察 2s；另存新文件+删原 |
+| 049 | 下线 AI 智能助手 | 报表球/对话/开关移除；扇形与后台直存保留 |
+| 050 | 待核对账单 | 高亮仅前台；信封持久+红点+一键已读；screenshot/share；syncId；仅明细 |
+| 051 | 记一笔时间选择 | 弃用系统表盘；Dialog 双输入 + 0–23 / 每 5 分快捷格 |

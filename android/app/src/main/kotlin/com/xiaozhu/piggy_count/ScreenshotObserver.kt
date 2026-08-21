@@ -13,14 +13,18 @@ import android.util.Log
 import java.io.File
 
 /**
- * MediaStore ContentObserver：检测新截图（含 Android 10+ pending 写入重试 + 截图稳定期）。
+ * MediaStore ContentObserver：截图稳定期 + 替换关联窗（ADR-045 / ADR-048）。
  *
- * 稳定期（ADR-045）：候选出现后等待文件静止再回调 Dart；同路径再变更则重置计时；
- * 稳定期结束前不写入已处理集。覆盖同路径的系统编辑（小米/华为/OPPO/vivo 常见）友好。
+ * - 稳定期 3s：写稳 / 快捷进编辑；同路径变更重置；可发早期进度，不落库。
+ * - 关联窗 15s：另存新文件+删原；窗满（或替换/连拍已决）才回调 Dart 入账。
+ * - 短观察 2s：原仍在又来新图 → 旧消失=替换，仍在=连拍。
  */
 class ScreenshotObserver(
     private val context: Context,
     private val onScreenshotDetected: (String) -> Unit,
+    private val onScreenshotProgress: (String) -> Unit = {},
+    private val onScreenshotSuperseded: (oldPath: String, newPath: String) -> Unit = { _, _ -> },
+    private val onScreenshotCancelled: (String) -> Unit = {},
     private val onSettleLog: (String) -> Unit = {},
 ) : ContentObserver(Handler(Looper.getMainLooper())) {
 
@@ -35,15 +39,28 @@ class ScreenshotObserver(
         private const val MAX_PATHS = 200
         private const val RETRY_MS = 600L
         private const val MAX_ATTEMPTS = 6
-        /** 自最近一次 MediaStore 变更起的安静期（多 OEM 截图后编辑窗）。 */
-        private const val SETTLE_MS = 2000L
+        /** 自该路径最近变更起的安静期。 */
+        private const val SETTLE_MS = 3000L
+        /** 自首次检测起的替换关联窗。 */
+        private const val ASSOC_MS = 15000L
+        /** 原仍在 + 新图出现时的短观察。 */
+        private const val OBSERVE_MS = 2000L
     }
 
-    private data class SettleCandidate(
+    private data class Candidate(
         val path: String,
         val name: String,
         var lastSize: Long,
-        var runnable: Runnable,
+        val firstSeenAt: Long,
+        /** 替换得到的后继：只再走稳定期，不开满关联窗。 */
+        var skipAssocWindow: Boolean = false,
+        var settleQuiet: Boolean = false,
+        var progressSent: Boolean = false,
+        var settleRunnable: Runnable? = null,
+        var gateRunnable: Runnable? = null,
+        var observeRunnable: Runnable? = null,
+        /** 短观察中的对端路径。 */
+        var observingPeer: String? = null,
     )
 
     private val prefs: SharedPreferences =
@@ -51,7 +68,7 @@ class ScreenshotObserver(
     private val handler = Handler(Looper.getMainLooper())
     private val processed = mutableSetOf<String>()
     private val pendingRetries = mutableSetOf<String>()
-    private val settling = mutableMapOf<String, SettleCandidate>()
+    private val candidates = mutableMapOf<String, Candidate>()
     private var lastAcceptedAt = 0L
 
     init {
@@ -61,12 +78,11 @@ class ScreenshotObserver(
         }
     }
 
-    /** 停止监听时取消未完成的稳定期与重试。 */
     fun dispose() {
-        for (c in settling.values) {
-            handler.removeCallbacks(c.runnable)
+        for (c in candidates.values) {
+            clearTimers(c)
         }
-        settling.clear()
+        candidates.clear()
         pendingRetries.clear()
         handler.removeCallbacksAndMessages(null)
     }
@@ -89,8 +105,7 @@ class ScreenshotObserver(
             val cursor = context.contentResolver.query(uri, projection(), null, null, null)
             cursor?.use {
                 if (!it.moveToFirst()) {
-                    // 条目消失：可能是预览里删除
-                    pruneMissingSettles()
+                    pruneMissingCandidates()
                     scheduleRetry(uri, attempt, "empty")
                     return
                 }
@@ -158,76 +173,269 @@ class ScreenshotObserver(
         }
     }
 
-    /**
-     * 进入或重置稳定期；**此时不**写入 [processed]、不回调 Dart。
-     */
     private fun offerCandidate(path: String, name: String, size: Long) {
         val lowerPath = path.lowercase()
         val lowerName = name.lowercase()
         if (KEYWORDS.none { lowerPath.contains(it) || lowerName.contains(it) }) return
         if (processed.contains(path)) return
 
-        val existing = settling[path]
+        val existing = candidates[path]
         if (existing != null) {
-            handler.removeCallbacks(existing.runnable)
-            existing.lastSize = size
-            existing.runnable = settleRunnable(path)
-            handler.postDelayed(existing.runnable, SETTLE_MS)
-            settleLog(
-                "稳定期：检测到截图变动（可能编辑/覆盖），重置计时 ${SETTLE_MS}ms file=$name size=$size",
-            )
-            return
-        }
-
-        val runnable = settleRunnable(path)
-        settling[path] = SettleCandidate(path, name, size, runnable)
-        handler.postDelayed(runnable, SETTLE_MS)
-        settleLog(
-            "稳定期：检测到新截图，等待 ${SETTLE_MS}ms 静止后入账 file=$name size=$size",
-        )
-    }
-
-    private fun settleRunnable(path: String): Runnable = Runnable {
-        finishSettle(path)
-    }
-
-    private fun finishSettle(path: String) {
-        val candidate = settling.remove(path) ?: return
-        if (processed.contains(path)) return
-
-        val file = File(path)
-        if (!file.exists() || file.length() <= 0L) {
-            settleLog("稳定期：截图已不存在，取消入账 file=${candidate.name}")
-            return
-        }
-
-        // 期满瞬间仍在变大：再等一轮（部分 OEM 写完后才更新 MediaStore）
-        val len = file.length()
-        if (len != candidate.lastSize && candidate.lastSize > 0L) {
-            candidate.lastSize = len
-            candidate.runnable = settleRunnable(path)
-            settling[path] = candidate
-            handler.postDelayed(candidate.runnable, SETTLE_MS)
-            settleLog(
-                "稳定期：文件大小仍在变化，延长等待 ${SETTLE_MS}ms file=${candidate.name} size=$len",
-            )
+            resetSettle(existing, size, reason = "变动重置")
             return
         }
 
         val now = System.currentTimeMillis()
-        if (now - lastAcceptedAt < 500) {
-            // 极短连发保护：稍后再试，仍不入 processed
-            candidate.runnable = settleRunnable(path)
-            settling[path] = candidate
-            handler.postDelayed(candidate.runnable, 500L)
+        val c = Candidate(
+            path = path,
+            name = name,
+            lastSize = size,
+            firstSeenAt = now,
+        )
+        candidates[path] = c
+        scheduleSettle(c)
+        settleLog(
+            "稳定期：检测到新截图，等待 ${SETTLE_MS}ms 静止；关联窗 ${ASSOC_MS}ms file=$name size=$size",
+        )
+
+        for (other in candidates.values.toList()) {
+            if (other.path == path) continue
+            if (!withinAssoc(other, now) && !other.skipAssocWindow) continue
+            if (!fileAlive(other.path)) continue
+            beginObservation(other, c)
+            break
+        }
+    }
+
+    private fun withinAssoc(c: Candidate, now: Long = System.currentTimeMillis()): Boolean {
+        if (c.skipAssocWindow) return false
+        return now - c.firstSeenAt <= ASSOC_MS
+    }
+
+    private fun resetSettle(c: Candidate, size: Long, reason: String) {
+        c.lastSize = size
+        c.settleQuiet = false
+        c.settleRunnable?.let { handler.removeCallbacks(it) }
+        scheduleSettle(c)
+        settleLog(
+            "稳定期：$reason，重置计时 ${SETTLE_MS}ms file=${c.name} size=$size",
+        )
+    }
+
+    private fun scheduleSettle(c: Candidate) {
+        val r = Runnable { onSettleDue(c.path) }
+        c.settleRunnable = r
+        handler.postDelayed(r, SETTLE_MS)
+    }
+
+    private fun onSettleDue(path: String) {
+        val c = candidates[path] ?: return
+        if (processed.contains(path)) {
+            dropCandidate(path)
             return
         }
 
-        processed.add(path)
+        val file = File(path)
+        if (!file.exists() || file.length() <= 0L) {
+            settleLog("稳定期：截图已不存在，取消 file=${c.name}")
+            handleMissing(path)
+            return
+        }
+
+        val len = file.length()
+        if (len != c.lastSize && c.lastSize > 0L) {
+            c.lastSize = len
+            scheduleSettle(c)
+            settleLog(
+                "稳定期：文件大小仍在变化，延长 ${SETTLE_MS}ms file=${c.name} size=$len",
+            )
+            return
+        }
+
+        c.settleQuiet = true
+        settleLog("稳定期：已静止 file=${c.name}")
+
+        if (c.observingPeer != null) {
+            return
+        }
+
+        if (c.skipAssocWindow) {
+            tryAccept(c)
+            return
+        }
+
+        if (!c.progressSent && !hasPeerInAssoc(c)) {
+            c.progressSent = true
+            settleLog("进度：稳定期满，等待关联窗/入账门闩 file=${c.name}")
+            try {
+                onScreenshotProgress(path)
+            } catch (e: Exception) {
+                Log.e(TAG, "onScreenshotProgress failed", e)
+            }
+        }
+
+        scheduleGate(c)
+    }
+
+    private fun hasPeerInAssoc(c: Candidate): Boolean {
+        val now = System.currentTimeMillis()
+        return candidates.values.any { other ->
+            other.path != c.path &&
+                fileAlive(other.path) &&
+                (withinAssoc(c, now) || withinAssoc(other, now) || other.skipAssocWindow)
+        }
+    }
+
+    private fun scheduleGate(c: Candidate) {
+        c.gateRunnable?.let { handler.removeCallbacks(it) }
+        val remaining = (c.firstSeenAt + ASSOC_MS) - System.currentTimeMillis()
+        if (remaining <= 0L) {
+            onGateDue(c.path)
+            return
+        }
+        val r = Runnable { onGateDue(c.path) }
+        c.gateRunnable = r
+        handler.postDelayed(r, remaining)
+        settleLog("门闩：关联窗剩余 ${remaining}ms 后尝试入账 file=${c.name}")
+    }
+
+    private fun onGateDue(path: String) {
+        val c = candidates[path] ?: return
+        if (c.observingPeer != null) {
+            settleLog("门闩：短观察未结束，推迟 file=${c.name}")
+            return
+        }
+        if (!c.settleQuiet) {
+            settleLog("门闩：尚未静止，等待稳定期 file=${c.name}")
+            return
+        }
+        // 连拍已由短观察拆成独立候选；此处不再因「还有另一张」而重开观察。
+        tryAccept(c)
+    }
+
+    private fun beginObservation(a: Candidate, b: Candidate) {
+        if (a.path == b.path) return
+        if (a.observingPeer == b.path && b.observingPeer == a.path) return
+
+        clearObservation(a)
+        clearObservation(b)
+
+        a.observingPeer = b.path
+        b.observingPeer = a.path
+        a.gateRunnable?.let { handler.removeCallbacks(it) }
+        b.gateRunnable?.let { handler.removeCallbacks(it) }
+        a.gateRunnable = null
+        b.gateRunnable = null
+
+        val r = Runnable { resolveObservation(a.path, b.path) }
+        a.observeRunnable = r
+        b.observeRunnable = r
+        handler.postDelayed(r, OBSERVE_MS)
+        settleLog("短观察：开始 ${OBSERVE_MS}ms a=${a.name} b=${b.name}")
+    }
+
+    private fun clearObservation(c: Candidate) {
+        c.observeRunnable?.let { handler.removeCallbacks(it) }
+        c.observeRunnable = null
+        val peerPath = c.observingPeer
+        c.observingPeer = null
+        if (peerPath != null) {
+            candidates[peerPath]?.let { peer ->
+                if (peer.observingPeer == c.path) {
+                    peer.observeRunnable?.let { handler.removeCallbacks(it) }
+                    peer.observeRunnable = null
+                    peer.observingPeer = null
+                }
+            }
+        }
+    }
+
+    private fun resolveObservation(pathA: String, pathB: String) {
+        val a = candidates[pathA]
+        val b = candidates[pathB]
+        val aAlive = a != null && fileAlive(pathA)
+        val bAlive = b != null && fileAlive(pathB)
+
+        if (a != null) clearObservation(a)
+        if (b != null) clearObservation(b)
+
+        when {
+            aAlive && bAlive -> {
+                settleLog("短观察：两张都在 → 连拍 a=${a!!.name} b=${b!!.name}")
+                if (a.settleQuiet) scheduleGate(a)
+                if (b.settleQuiet) scheduleGate(b)
+            }
+            !aAlive && bAlive -> {
+                settleLog("短观察：a 消失 → 替换为 b=${b!!.name}")
+                applyReplace(oldPath = pathA, new = b)
+            }
+            aAlive && !bAlive -> {
+                settleLog("短观察：b 消失 → 替换为 a=${a!!.name}")
+                applyReplace(oldPath = pathB, new = a)
+            }
+            else -> {
+                settleLog("短观察：两张都消失，取消")
+                dropCandidate(pathA)
+                dropCandidate(pathB)
+            }
+        }
+    }
+
+    private fun applyReplace(oldPath: String, new: Candidate) {
+        val old = candidates[oldPath]
+        if (old != null) {
+            clearTimers(old)
+            candidates.remove(oldPath)
+        }
+        settleLog("替换：取消旧文件，新文件只再走稳定期 ${SETTLE_MS}ms file=${new.name}")
+        try {
+            onScreenshotSuperseded(oldPath, new.path)
+        } catch (e: Exception) {
+            Log.e(TAG, "onScreenshotSuperseded failed", e)
+        }
+
+        new.skipAssocWindow = true
+        new.settleQuiet = false
+        new.progressSent = false
+        clearObservation(new)
+        new.gateRunnable?.let { handler.removeCallbacks(it) }
+        new.gateRunnable = null
+        resetSettle(new, new.lastSize, reason = "替换后重等")
+    }
+
+    private fun tryAccept(c: Candidate) {
+        if (processed.contains(c.path)) {
+            dropCandidate(c.path)
+            return
+        }
+        if (!fileAlive(c.path)) {
+            settleLog("门闩：文件已不存在，取消 file=${c.name}")
+            dropCandidate(c.path)
+            return
+        }
+        if (!c.settleQuiet) return
+        if (c.observingPeer != null) return
+
+        val now = System.currentTimeMillis()
+        if (now - lastAcceptedAt < 500) {
+            handler.postDelayed({
+                val again = candidates[c.path] ?: return@postDelayed
+                tryAccept(again)
+            }, 500L)
+            return
+        }
+
+        processed.add(c.path)
         lastAcceptedAt = now
         persist()
-        settleLog("稳定期：已静止，开始入账 file=${candidate.name}")
-        onScreenshotDetected(path)
+        clearTimers(c)
+        candidates.remove(c.path)
+        settleLog("门闩：通过，开始入账 file=${c.name}")
+        try {
+            onScreenshotDetected(c.path)
+        } catch (e: Exception) {
+            Log.e(TAG, "onScreenshotDetected failed", e)
+        }
         if (processed.size > MAX_PATHS) {
             val drop = processed.take(50).toSet()
             processed.removeAll(drop)
@@ -235,23 +443,77 @@ class ScreenshotObserver(
         }
     }
 
-    /** 稳定期内文件已被删（系统预览删除）→ 取消，避免误入账。 */
-    private fun pruneMissingSettles() {
-        val gone = settling.keys.filter { path ->
-            try {
-                !File(path).exists()
-            } catch (_: Exception) {
-                true
-            }
-        }
+    private fun pruneMissingCandidates() {
+        val gone = candidates.keys.filter { !fileAlive(it) }
         for (path in gone) {
-            val c = settling.remove(path) ?: continue
-            handler.removeCallbacks(c.runnable)
-            settleLog("稳定期：检测到截图被删除，取消入账 file=${c.name}")
+            handleMissing(path)
         }
     }
 
-    /** Logcat + 程序日志（经 MethodChannel）。 */
+    private fun handleMissing(path: String) {
+        val c = candidates[path] ?: return
+        val peerPath = c.observingPeer
+        if (peerPath != null) {
+            val peer = candidates[peerPath]
+            if (peer != null && fileAlive(peerPath)) {
+                settleLog("删除：观察中旧图消失 → 立即按替换处理 file=${c.name}")
+                clearObservation(c)
+                clearObservation(peer)
+                applyReplace(oldPath = path, new = peer)
+                return
+            }
+        }
+
+        val now = System.currentTimeMillis()
+        val successor = candidates.values
+            .filter {
+                it.path != path &&
+                    fileAlive(it.path) &&
+                    it.firstSeenAt >= c.firstSeenAt &&
+                    (withinAssoc(c, now) || withinAssoc(it, now) || it.skipAssocWindow)
+            }
+            .maxByOrNull { it.firstSeenAt }
+
+        if (successor != null) {
+            settleLog("删除：关联窗内有后继 → 替换为 file=${successor.name}")
+            applyReplace(oldPath = path, new = successor)
+            return
+        }
+
+        settleLog("删除：无后继，取消入账 file=${c.name}")
+        val progressSent = c.progressSent
+        dropCandidate(path)
+        if (progressSent) {
+            try {
+                onScreenshotCancelled(path)
+            } catch (e: Exception) {
+                Log.e(TAG, "onScreenshotCancelled failed", e)
+            }
+        }
+    }
+
+    private fun dropCandidate(path: String) {
+        val c = candidates.remove(path) ?: return
+        clearTimers(c)
+    }
+
+    private fun clearTimers(c: Candidate) {
+        c.settleRunnable?.let { handler.removeCallbacks(it) }
+        c.gateRunnable?.let { handler.removeCallbacks(it) }
+        clearObservation(c)
+        c.settleRunnable = null
+        c.gateRunnable = null
+    }
+
+    private fun fileAlive(path: String): Boolean {
+        return try {
+            val f = File(path)
+            f.exists() && f.length() > 0L
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private fun settleLog(message: String) {
         Log.i(TAG, message)
         try {

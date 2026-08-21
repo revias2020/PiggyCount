@@ -30,8 +30,6 @@ class MinePage extends ConsumerWidget {
     final autoTags = ref.watch(autoGenerateTagsProvider).valueOrNull ?? true;
     final screenshot =
         ref.watch(screenshotAutoBillingProvider).valueOrNull ?? false;
-    final aiAssistant =
-        ref.watch(aiAssistantEnabledProvider).valueOrNull ?? true;
     final aiSubtitle =
         ref.watch(aiMineSubtitleProvider).valueOrNull ?? '服务商与能力绑定';
     final cloudCfg = ref.watch(cloudSyncConfigProvider).valueOrNull;
@@ -140,16 +138,6 @@ class MinePage extends ConsumerWidget {
         const SizedBox(height: PigTokens.spaceMd),
         _SectionCard(
           children: [
-            SwitchListTile(
-              secondary: const _MineIcon(Icons.smart_toy_outlined),
-              title: const Text('AI 智能助手'),
-              activeThumbColor: PigTokens.primary,
-              value: aiAssistant,
-              onChanged: (v) {
-                ref.read(settingsRepositoryProvider).setAiAssistantEnabled(v);
-              },
-            ),
-            const _SectionDivider(),
             SwitchListTile(
               secondary: const _MineIcon(Icons.screenshot_monitor_outlined),
               title: const Text('截图自动记账'),
@@ -323,14 +311,18 @@ class _MineTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return ListTile(
       enabled: enabled,
+      dense: true,
+      minVerticalPadding: 0,
       contentPadding: const EdgeInsets.symmetric(
         horizontal: PigTokens.spaceLg,
-        vertical: PigTokens.spaceXs,
       ),
       leading: _MineIcon(icon),
       title: Text(
         title,
-        style: const TextStyle(fontWeight: FontWeight.w600),
+        style: const TextStyle(
+          fontWeight: FontWeight.w600,
+          height: 1.15,
+        ),
       ),
       subtitle: subtitle == null
           ? null
@@ -338,6 +330,7 @@ class _MineTile extends StatelessWidget {
               subtitle!,
               style: const TextStyle(
                 fontSize: 12,
+                height: 1.15,
                 color: PigTokens.textTertiary,
               ),
             ),

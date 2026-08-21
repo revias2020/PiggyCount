@@ -19,8 +19,9 @@ class OpenAiCompatibleClient {
   http.Client? _testHttp;
   int _testGeneration = 0;
 
-  static const testTimeout = Duration(seconds: 20);
-  static const requestTimeout = Duration(seconds: 90);
+  static const testTimeout = Duration(seconds: 15);
+  static const textTimeout = Duration(seconds: 30);
+  static const visionTimeout = Duration(seconds: 60);
 
   /// 取消进行中的连接测试（改 Key/URL/模型时调用）。
   void cancelTests() {
@@ -47,7 +48,7 @@ class OpenAiCompatibleClient {
       model: provider.textModel,
       messages: messages,
       temperature: temperature,
-      timeout: timeout ?? requestTimeout,
+      timeout: timeout ?? textTimeout,
     );
   }
 
@@ -77,11 +78,11 @@ class OpenAiCompatibleClient {
       model: provider.visionModel,
       messages: messages,
       temperature: 0.2,
-      timeout: timeout ?? requestTimeout,
+      timeout: timeout ?? visionTimeout,
     );
   }
 
-  /// 测试文本模型（timeout 20s）。
+  /// 测试文本模型（timeout 15s）。
   Future<void> testText(AiServiceProvider provider) async {
     await _runTest((client, gen) async {
       if (!provider.isValid) {
@@ -107,7 +108,7 @@ class OpenAiCompatibleClient {
     });
   }
 
-  /// 测试视觉模型（timeout 20s）。
+  /// 测试视觉模型（timeout 15s）。
   Future<void> testVision(AiServiceProvider provider) async {
     await _runTest((client, gen) async {
       if (!provider.isValid) {

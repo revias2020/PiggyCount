@@ -67,6 +67,7 @@ void main() {
         note: '测试',
       ),
       ledgerId: ledgerId,
+      source: 'manual',
     );
     expect(smallId, isNotNull);
     final smallTags =
@@ -83,6 +84,7 @@ void main() {
         note: '测试',
       ),
       ledgerId: ledgerId,
+      source: 'manual',
     );
     final largeTags =
         await TransactionRepository(db).getTagIds(largeId!);
@@ -111,6 +113,7 @@ void main() {
         ],
       ),
       ledgerId: ledgerId,
+      source: 'manual',
     );
     final ids = await TransactionRepository(db).getTagIds(txId!);
     // 前两个已有 + 配额 2，加班餐因配额满而不建；仅「外卖」「聚餐」

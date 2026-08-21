@@ -28,38 +28,45 @@ class BillingNotificationService {
   /// 最近一次失败通知正文；点失败通知时弹 Dialog 用。
   String? lastFailureBody;
 
+  /// 最近一次成功直存的账单 syncId（点成功通知滚到该笔）。
+  String? lastSuccessSyncId;
+
   /// App 层注入：切到明细 / 弹失败框。
   void Function(BillingNotificationAction action)? onAction;
 
   Future<void> ensureInitialized() async {
     if (_ready) return;
-    const android = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const ios = DarwinInitializationSettings();
-    await _plugin.initialize(
-      settings: const InitializationSettings(android: android, iOS: ios),
-      onDidReceiveNotificationResponse: _onResponse,
-    );
-    final androidPlugin = _plugin.resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>();
-    await androidPlugin?.createNotificationChannel(
-      const AndroidNotificationChannel(
-        _progressChannelId,
-        '智能记账进度',
-        description: '截图/分享识别进行中',
-        importance: Importance.defaultImportance,
-      ),
-    );
-    await androidPlugin?.createNotificationChannel(
-      const AndroidNotificationChannel(
-        _resultChannelId,
-        '智能记账结果',
-        description: '截图/分享识别结果（横幅、无声）',
-        importance: Importance.high,
-        playSound: false,
-        enableVibration: false,
-      ),
-    );
-    _ready = true;
+    try {
+      const android = AndroidInitializationSettings('@mipmap/ic_launcher');
+      const ios = DarwinInitializationSettings();
+      await _plugin.initialize(
+        settings: const InitializationSettings(android: android, iOS: ios),
+        onDidReceiveNotificationResponse: _onResponse,
+      );
+      final androidPlugin = _plugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+      await androidPlugin?.createNotificationChannel(
+        const AndroidNotificationChannel(
+          _progressChannelId,
+          '智能记账进度',
+          description: '截图/分享识别进行中',
+          importance: Importance.defaultImportance,
+        ),
+      );
+      await androidPlugin?.createNotificationChannel(
+        const AndroidNotificationChannel(
+          _resultChannelId,
+          '智能记账结果',
+          description: '截图/分享识别结果（横幅、无声）',
+          importance: Importance.high,
+          playSound: false,
+          enableVibration: false,
+        ),
+      );
+      _ready = true;
+    } catch (_) {
+      // 测试环境 / 无平台实现时跳过；真机启动仍可稍后重试。
+    }
   }
 
   /// 冷启动：若用户是点结果通知打开的 App，回放一次点击动作。
@@ -119,7 +126,9 @@ class BillingNotificationService {
     try {
       await ensureInitialized();
       await _plugin.cancel(id: progressId);
-      if (!success) lastFailureBody = body;
+      if (!success) {
+        lastFailureBody = body;
+      }
       await _plugin.show(
         id: resultId,
         title: title,

@@ -69,34 +69,4 @@ class SettingsRepository {
         );
   }
 
-  static const aiAssistantEnabledKey = 'ai_assistant_enabled';
-
-  /// AI 智能助手总开关（默认开启）。关闭后报表页隐藏 AI 入口。
-  Future<bool> aiAssistantEnabled() async {
-    final row = await (_db.select(_db.appSettings)
-          ..where((t) => t.key.equals(aiAssistantEnabledKey)))
-        .getSingleOrNull();
-    if (row == null) return true;
-    return row.value != '0' && row.value != 'false';
-  }
-
-  Stream<bool> watchAiAssistantEnabled() {
-    return (_db.select(_db.appSettings)
-          ..where((t) => t.key.equals(aiAssistantEnabledKey)))
-        .watch()
-        .map((rows) {
-      if (rows.isEmpty) return true;
-      final v = rows.first.value;
-      return v != '0' && v != 'false';
-    });
-  }
-
-  Future<void> setAiAssistantEnabled(bool enabled) async {
-    await _db.into(_db.appSettings).insertOnConflictUpdate(
-          AppSettingsCompanion.insert(
-            key: aiAssistantEnabledKey,
-            value: enabled ? '1' : '0',
-          ),
-        );
-  }
 }

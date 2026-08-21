@@ -6,7 +6,7 @@ import '../../utils/app_permissions.dart';
 import '../system/logger_service.dart';
 import 'auto_billing_service.dart';
 
-/// Android 截图监听 Dart 端适配。
+/// Android 截图监听 Dart 端适配（ADR-045 / ADR-048）。
 class ScreenshotMonitorService {
   ScreenshotMonitorService(this._autoBilling);
 
@@ -26,7 +26,6 @@ class ScreenshotMonitorService {
     if (!outcome.granted) {
       throw StateError(outcome.message ?? '需要相册权限才能监听截图');
     }
-    // 通知非阻断
     await AppPermissions.requestNotification();
   }
 
@@ -37,21 +36,43 @@ class ScreenshotMonitorService {
     await ensurePermissionOrThrow();
 
     _channel.setMethodCallHandler((call) async {
-      if (call.method == 'onScreenshotDetected') {
-        final path = call.arguments as String?;
-        if (path == null || path.isEmpty) return;
-        await _autoBilling.processImagePath(
-          path,
-          source: 'screenshot',
-          showNotification: true,
-          autoSave: true,
-        );
-        return;
-      }
-      if (call.method == 'onScreenshotSettleLog') {
-        final message = call.arguments as String?;
-        if (message == null || message.isEmpty) return;
-        logger.info('Screenshot', message);
+      switch (call.method) {
+        case 'onScreenshotDetected':
+          final path = call.arguments as String?;
+          if (path == null || path.isEmpty) return;
+          await _autoBilling.processImagePath(
+            path,
+            source: 'screenshot',
+            showNotification: true,
+            autoSave: true,
+          );
+          return;
+        case 'onScreenshotProgress':
+          final path = call.arguments as String?;
+          if (path == null || path.isEmpty) return;
+          await _autoBilling.showScreenshotEarlyProgress(path);
+          return;
+        case 'onScreenshotSuperseded':
+          final args = call.arguments;
+          if (args is! Map) return;
+          final oldPath = args['oldPath'] as String?;
+          final newPath = args['newPath'] as String?;
+          if (oldPath == null || oldPath.isEmpty) return;
+          await _autoBilling.supersedeScreenshot(
+            oldPath: oldPath,
+            newPath: newPath,
+          );
+          return;
+        case 'onScreenshotCancelled':
+          final cancelled = call.arguments as String?;
+          if (cancelled == null || cancelled.isEmpty) return;
+          await _autoBilling.cancelScreenshotProgress(cancelled);
+          return;
+        case 'onScreenshotSettleLog':
+          final message = call.arguments as String?;
+          if (message == null || message.isEmpty) return;
+          logger.info('Screenshot', message);
+          return;
       }
     });
 

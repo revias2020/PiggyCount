@@ -115,18 +115,4 @@ class AiExtractionEngine {
       providersAttempted: providers.length,
     );
   }
-
-  /// 自由对话（账单分析等）。
-  Future<String> chat({
-    required String userMessage,
-    String? systemPrompt,
-  }) async {
-    final provider = await _store.resolve(AiCapabilityKind.text);
-    return _client.chat(
-      provider: provider,
-      userPrompt: userMessage,
-      systemPrompt: systemPrompt,
-      temperature: 0.7,
-    );
-  }
 }

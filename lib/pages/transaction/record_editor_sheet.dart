@@ -18,6 +18,7 @@ import '../../widgets/page_status.dart';
 import '../../widgets/workspace_sheet.dart';
 import 'amount_keypad.dart';
 import 'image_billing_sheet.dart';
+import 'record_time_picker_dialog.dart';
 
 /// 打开记一笔 / 编辑账单底部弹层。
 ///
@@ -244,8 +245,8 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
   }
 
   Future<void> _pickTime() async {
-    final t = await showTimePicker(
-      context: context,
+    final t = await showRecordTimePicker(
+      context,
       initialTime: TimeOfDay.fromDateTime(_happenedAt),
     );
     if (t == null) return;

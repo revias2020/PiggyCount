@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../ai/ai_provider_store.dart';
 import '../../ai/ai_vision_failure.dart';
 import '../ai/ai_bookkeeper.dart';
+import '../platform/android_activity_bridge.dart';
 import '../system/logger_service.dart';
 import 'billing_notification_service.dart';
 import 'vision_image_prep.dart';
@@ -34,6 +35,7 @@ class AutoBillingService {
     required this.resolveLedgerId,
     BillingNotificationService? notifications,
     AiProviderStore? providerStore,
+    this.onAutoSaved,
   })  : notifications = notifications ?? BillingNotificationService(),
         _providerStore = providerStore ?? AiProviderStore();
 
@@ -41,15 +43,28 @@ class AutoBillingService {
   final Future<int?> Function() resolveLedgerId;
   final BillingNotificationService notifications;
   final AiProviderStore _providerStore;
+  /// 后台直存成功后的钩子（待核对等）；参数为本地 id 列表、source、ledgerId。
+  final Future<void> Function(
+    List<int> ids,
+    String source,
+    int ledgerId,
+  )? onAutoSaved;
 
   static const _processedKey = 'piggy_processed_screenshots';
   static const _dupWindowMs = 5000;
   static const _fileWaitMs = 3000;
 
   final Set<String> _processed = {};
+  /// 被系统预览「另存新文件+删原」取代的路径；识别中遇到则放弃落库（ADR-048）。
+  final Set<String> _superseded = {};
   String? _lastPath;
   int _lastTime = 0;
   bool _loaded = false;
+
+  /// 当前正在 Vision/落库的图片路径（用于替换时取消进度）。
+  String? _inflightPath;
+  /// 替换后尚未收到门闩回调的新路径；避免空批次把进度通知清掉。
+  String? _awaitingScreenshotPath;
 
   /// 多张串行：后一张等前一张结束（ADR-018）。
   Future<void> _queue = Future.value();
@@ -86,7 +101,10 @@ class AutoBillingService {
     final outcomes = List<_PendingOutcome>.from(_batchOutcomes);
     _batchOutcomes.clear();
     if (outcomes.isEmpty) {
-      await notifications.cancelProgress();
+      // 静默去重等空结果：清进度。替换等待后继时保留。
+      if (_inflightPath == null && _awaitingScreenshotPath == null) {
+        await notifications.cancelProgress();
+      }
       return;
     }
 
@@ -126,6 +144,54 @@ class AutoBillingService {
     );
   }
 
+  /// 稳定期满、关联窗未到：早期进度（不 Vision / 不落库）。
+  Future<void> showScreenshotEarlyProgress(String imagePath) async {
+    if (_superseded.contains(imagePath)) return;
+    logger.info(
+      'AutoBilling',
+      '早期进度 source=screenshot file=${p.basename(imagePath)}',
+    );
+    await notifications.showProgress(
+      title: '检测到截图',
+      body: '等待确认后识别…',
+    );
+  }
+
+  /// 原生判定截图被编辑另存替换：取消旧路径入账意图。
+  Future<void> supersedeScreenshot({
+    required String oldPath,
+    String? newPath,
+  }) async {
+    _superseded.add(oldPath);
+    if (_superseded.length > 40) {
+      final drop = _superseded.take(20).toList();
+      _superseded.removeAll(drop);
+    }
+    _awaitingScreenshotPath = newPath;
+    logger.info(
+      'AutoBilling',
+      '截图替换 old=${p.basename(oldPath)} '
+      'new=${newPath == null || newPath.isEmpty ? "-" : p.basename(newPath)}',
+    );
+    await notifications.showProgress(
+      title: '截图已更新',
+      body: '改用编辑后的图片识别…',
+    );
+  }
+
+  /// 预览删除且无后继：清早期进度。
+  Future<void> cancelScreenshotProgress(String imagePath) async {
+    _superseded.add(imagePath);
+    if (_awaitingScreenshotPath == imagePath) {
+      _awaitingScreenshotPath = null;
+    }
+    logger.info(
+      'AutoBilling',
+      '截图取消 file=${p.basename(imagePath)}',
+    );
+    await notifications.cancelProgress();
+  }
+
   /// 处理本地图片路径；成功返回交易 id 列表。
   Future<List<int>> processImagePath(
     String imagePath, {
@@ -133,8 +199,15 @@ class AutoBillingService {
     bool showNotification = true,
     bool autoSave = true,
   }) {
+    if (_awaitingScreenshotPath == imagePath) {
+      _awaitingScreenshotPath = null;
+    }
     final done = Completer<List<int>>();
     _batchInflight++;
+    if (_batchInflight == 1) {
+      // 批次开始：返回键送后台，避免 finish 拆引擎
+      unawaited(AndroidActivityBridge.setRetainOnBack(true));
+    }
     _queue = _queue.then((_) async {
       try {
         final ids = await _processImagePathLocked(
@@ -154,6 +227,7 @@ class AutoBillingService {
           } catch (_) {
             _batchOutcomes.clear();
           }
+          await AndroidActivityBridge.setRetainOnBack(false);
         }
       }
     });
@@ -169,6 +243,13 @@ class AutoBillingService {
     await _ensureCache();
     // 已处理 / 短窗去重：静默跳过，不打点（ADR-022）
     if (_processed.contains(imagePath)) return const [];
+    if (_superseded.contains(imagePath)) {
+      logger.info(
+        'AutoBilling',
+        '已替换跳过 source=$source file=${p.basename(imagePath)}',
+      );
+      return const [];
+    }
 
     final now = DateTime.now().millisecondsSinceEpoch;
     if (_lastPath == imagePath && now - _lastTime < _dupWindowMs) {
@@ -196,161 +277,190 @@ class AutoBillingService {
     }
 
     final file = File(imagePath);
-    if (showNotification) {
-      await notifications.showProgress(title: '检测到图片', body: '等待文件就绪…');
-    }
-
-    final ready = await _waitFile(file);
-    if (!ready) {
-      logger.warning('AutoBilling', '文件不可读 source=$source file=$fileName');
-      if (showNotification) {
-        _recordOutcome(
-          const _PendingOutcome(
-            kind: _BillingOutcomeKind.fail,
-            title: '文件不可用',
-            body: '截图尚未可读，请稍后通过记一笔扇形「图片」重试。',
-          ),
-        );
-      }
-      return const [];
-    }
-
-    logger.info(
-      'AutoBilling',
-      '开始识别 source=$source providers=${fallbackProviders.length} '
-      'primary=${fallbackProviders.first.name}',
-    );
-
-    if (showNotification) {
-      await notifications.showProgress(title: '正在识别', body: 'AI 分析账单中…');
-    }
-
+    _inflightPath = imagePath;
     try {
-      final rawBytes = await file.readAsBytes();
-      final mime = imagePath.toLowerCase().endsWith('.png')
-          ? 'image/png'
-          : 'image/jpeg';
-      final prepared = await prepareVisionImageForUpload(
-        rawBytes,
-        mimeType: mime,
+      if (showNotification) {
+        await notifications.showProgress(title: '检测到图片', body: '等待文件就绪…');
+      }
+
+      final ready = await _waitFile(file);
+      if (_superseded.contains(imagePath)) {
+        logger.info('AutoBilling', '等待文件时被替换 file=$fileName');
+        return const [];
+      }
+      if (!ready) {
+        logger.warning('AutoBilling', '文件不可读 source=$source file=$fileName');
+        if (showNotification) {
+          _recordOutcome(
+            const _PendingOutcome(
+              kind: _BillingOutcomeKind.fail,
+              title: '文件不可用',
+              body: '截图尚未可读，请稍后通过记一笔扇形「图片」重试。',
+            ),
+          );
+        }
+        return const [];
+      }
+
+      logger.info(
+        'AutoBilling',
+        '开始识别 source=$source providers=${fallbackProviders.length} '
+        'primary=${fallbackProviders.first.name}',
       );
-      if (prepared.bytes.length != rawBytes.length ||
-          prepared.mimeType != mime) {
-        logger.info(
+
+      if (showNotification) {
+        await notifications.showProgress(title: '正在识别', body: 'AI 分析账单中…');
+      }
+
+      try {
+        final rawBytes = await file.readAsBytes();
+        if (_superseded.contains(imagePath)) {
+          logger.info('AutoBilling', '读图后被替换，放弃 file=$fileName');
+          return const [];
+        }
+        final mime = imagePath.toLowerCase().endsWith('.png')
+            ? 'image/png'
+            : 'image/jpeg';
+        final prepared = await prepareVisionImageForUpload(
+          rawBytes,
+          mimeType: mime,
+        );
+        if (prepared.bytes.length != rawBytes.length ||
+            prepared.mimeType != mime) {
+          logger.info(
+            'AutoBilling',
+            '图片已压缩 source=$source '
+            '${rawBytes.length}→${prepared.bytes.length} bytes',
+          );
+        }
+        final bills = await bookkeeper.fromImageWithFallback(
+          prepared.bytes,
+          mimeType: prepared.mimeType,
+        );
+        if (_superseded.contains(imagePath)) {
+          logger.info('AutoBilling', '识别中被替换，放弃落库 file=$fileName');
+          return const [];
+        }
+        await _mark(imagePath);
+
+        if (bills.isEmpty) {
+          logger.warning('AutoBilling', '非账单 source=$source file=$fileName');
+          if (showNotification) {
+            _recordOutcome(
+              const _PendingOutcome(
+                kind: _BillingOutcomeKind.fail,
+                title: '未识别到账单',
+                body: '该图可能不是支付截图',
+              ),
+            );
+          }
+          return const [];
+        }
+
+        if (!autoSave) {
+          if (showNotification) await notifications.cancelProgress();
+          return const [];
+        }
+
+        final ledgerId = await resolveLedgerId();
+        if (ledgerId == null) {
+          logger.error('AutoBilling', '未找到账本 source=$source');
+          if (showNotification) {
+            _recordOutcome(
+              const _PendingOutcome(
+                kind: _BillingOutcomeKind.fail,
+                title: '记账失败',
+                body: '未找到账本',
+              ),
+            );
+          }
+          return const [];
+        }
+
+        if (_superseded.contains(imagePath)) {
+          logger.info('AutoBilling', '落库前被替换，放弃 file=$fileName');
+          return const [];
+        }
+
+        final ids = await bookkeeper.saveBills(
+          bills: bills,
+          ledgerId: ledgerId,
+          source: source,
+        );
+
+        if (ids.isEmpty) {
+          logger.warning('AutoBilling', '保存失败 source=$source');
+        } else {
+          logger.info('AutoBilling', '自动入账 ${ids.length} 笔 source=$source');
+          try {
+            await onAutoSaved?.call(ids, source, ledgerId);
+          } catch (e, st) {
+            logger.error('AutoBilling', 'onAutoSaved 失败 source=$source', e, st);
+          }
+        }
+
+        if (showNotification) {
+          final total = bills.fold<double>(0, (a, b) => a + (b.amount ?? 0));
+          final ok = ids.isNotEmpty;
+          _recordOutcome(
+            _PendingOutcome(
+              kind: ok ? _BillingOutcomeKind.success : _BillingOutcomeKind.fail,
+              title: ok ? '自动记账成功' : '保存失败',
+              body: ok
+                  ? '已入账 ${ids.length} 笔，合计 ¥${total.toStringAsFixed(2)}'
+                  : '请打开 App 手动确认',
+            ),
+          );
+        }
+        return ids;
+      } on AiVisionExhaustedException catch (e, st) {
+        if (_superseded.contains(imagePath)) return const [];
+        logger.error(
           'AutoBilling',
-          '图片已压缩 source=$source '
-          '${rawBytes.length}→${prepared.bytes.length} bytes',
+          '${e.notificationTitle} source=$source',
+          e,
+          st,
         );
-      }
-      final bills = await bookkeeper.fromImageWithFallback(
-        prepared.bytes,
-        mimeType: prepared.mimeType,
-      );
-      await _mark(imagePath);
-
-      if (bills.isEmpty) {
-        logger.warning('AutoBilling', '非账单 source=$source file=$fileName');
         if (showNotification) {
           _recordOutcome(
-            const _PendingOutcome(
+            _PendingOutcome(
               kind: _BillingOutcomeKind.fail,
-              title: '未识别到账单',
-              body: '该图可能不是支付截图',
+              title: e.notificationTitle,
+              body: e.notificationBody(),
+            ),
+          );
+        }
+        return const [];
+      } catch (e, st) {
+        if (_superseded.contains(imagePath)) return const [];
+        final msg = '$e';
+        final isDuplicate = msg.contains('已存在相同账本');
+        final isTransport = isAiTransportFailure(e);
+        final failTitle = isDuplicate
+            ? '记账取消'
+            : (isTransport ? '网络异常' : '识别失败');
+        logger.error(
+          'AutoBilling',
+          isDuplicate ? '记账取消 source=$source' : '$failTitle source=$source',
+          e,
+          st,
+        );
+        debugPrint('AutoBilling failed: $e');
+        if (showNotification) {
+          _recordOutcome(
+            _PendingOutcome(
+              kind: isDuplicate
+                  ? _BillingOutcomeKind.skip
+                  : _BillingOutcomeKind.fail,
+              title: isDuplicate ? '记账取消' : failTitle,
+              body: msg,
             ),
           );
         }
         return const [];
       }
-
-      if (!autoSave) {
-        if (showNotification) await notifications.cancelProgress();
-        return const [];
-      }
-
-      final ledgerId = await resolveLedgerId();
-      if (ledgerId == null) {
-        logger.error('AutoBilling', '未找到账本 source=$source');
-        if (showNotification) {
-          _recordOutcome(
-            const _PendingOutcome(
-              kind: _BillingOutcomeKind.fail,
-              title: '记账失败',
-              body: '未找到账本',
-            ),
-          );
-        }
-        return const [];
-      }
-
-      final ids = await bookkeeper.saveBills(
-        bills: bills,
-        ledgerId: ledgerId,
-        source: source,
-      );
-
-      if (ids.isEmpty) {
-        logger.warning('AutoBilling', '保存失败 source=$source');
-      } else {
-        logger.info('AutoBilling', '自动入账 ${ids.length} 笔 source=$source');
-      }
-
-      if (showNotification) {
-        final total = bills.fold<double>(0, (a, b) => a + (b.amount ?? 0));
-        final ok = ids.isNotEmpty;
-        _recordOutcome(
-          _PendingOutcome(
-            kind: ok ? _BillingOutcomeKind.success : _BillingOutcomeKind.fail,
-            title: ok ? '自动记账成功' : '保存失败',
-            body: ok
-                ? '已入账 ${ids.length} 笔，合计 ¥${total.toStringAsFixed(2)}'
-                : '请打开 App 手动确认',
-          ),
-        );
-      }
-      return ids;
-    } on AiVisionExhaustedException catch (e, st) {
-      logger.error(
-        'AutoBilling',
-        '${e.notificationTitle} source=$source',
-        e,
-        st,
-      );
-      if (showNotification) {
-        _recordOutcome(
-          _PendingOutcome(
-            kind: _BillingOutcomeKind.fail,
-            title: e.notificationTitle,
-            body: e.notificationBody(),
-          ),
-        );
-      }
-      return const [];
-    } catch (e, st) {
-      final msg = '$e';
-      final isDuplicate = msg.contains('已存在相同账本');
-      final isTransport = isAiTransportFailure(e);
-      final failTitle = isDuplicate
-          ? '记账取消'
-          : (isTransport ? '网络异常' : '识别失败');
-      logger.error(
-        'AutoBilling',
-        isDuplicate ? '记账取消 source=$source' : '$failTitle source=$source',
-        e,
-        st,
-      );
-      debugPrint('AutoBilling failed: $e');
-      if (showNotification) {
-        _recordOutcome(
-          _PendingOutcome(
-            kind: isDuplicate
-                ? _BillingOutcomeKind.skip
-                : _BillingOutcomeKind.fail,
-            title: isDuplicate ? '记账取消' : failTitle,
-            body: msg,
-          ),
-        );
-      }
-      return const [];
+    } finally {
+      if (_inflightPath == imagePath) _inflightPath = null;
     }
   }
 

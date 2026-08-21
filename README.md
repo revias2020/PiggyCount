@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B?logo=flutter)](https://flutter.dev)
 [![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20iOS-lightgrey)](#)
-[![Version](https://img.shields.io/badge/version-0.2.1-green)](pubspec.yaml)
+[![Version](https://img.shields.io/badge/version-0.3.0-green)](pubspec.yaml)
 
 **免费 · 开源 · 本机优先** 的个人记账应用。
 
@@ -22,9 +22,9 @@
 | 费用 | 高级功能常收费 | **完全免费**，MIT 开源 |
 | 数据 | 多存第三方云 | **本机 SQLite 优先**，可选自建同步 |
 | 隐私 | 可能追踪 / 分析 | **无广告、无追踪、无强制登录** |
-| 记账方式 | 多为手动 | 手动 + 文字 / 图片 / 语音 / 截图自动化 |
+| 记账方式 | 多为手动 | 手动 + 图片 / 语音 / 截图自动化 |
 
-> 平台：Android · iOS（**0.2.1 真机测试以 Android 为主**；桌面小组件目前仅 Android）  
+> 平台：Android · iOS（**0.3.0 真机测试以 Android 为主**；桌面小组件目前仅 Android）  
 > 界面语言：简体中文（当前仅亮色模式）
 
 ---
@@ -49,10 +49,10 @@
 
 需自行配置 **智谱** 或任意 **OpenAI 兼容** 接口：
 
-- 文字对话记账与分析
+- 语音记账（系统 ASR → 文本模型结构化）
 - 拍照 / 相册图片识别入账
-- 语音记账（系统 ASR）
 - Android：截图监听、系统分享入账；桌面**收支速览**小组件
+- CSV 导入可选 AI 列名与分类/标签映射
 
 ### 数据
 

@@ -6,7 +6,7 @@ import 'bill_creation_service.dart';
 
 /// 智能记账统一入口：提取 →（可选）确认后落库。
 ///
-/// MVP：语音/对话与扇形拍照选图默认先返回待确认账单，由 UI 调用 [saveBills]；
+/// 语音与扇形拍照选图默认先返回待确认账单，由 UI 调用 [saveBills]；
 /// 截图自动 / 分享入账走后台通知直存（ADR-018）。
 class AiBookkeeper {
   AiBookkeeper({
@@ -48,10 +48,12 @@ class AiBookkeeper {
   }
 
   /// 确认后批量落库；返回成功写入的交易 id。
+  ///
+  /// [source] 须由调用方显式传入（如 `voice` / `screenshot` / `share`）。
   Future<List<int>> saveBills({
     required List<BillInfo> bills,
     required int ledgerId,
-    String source = 'ai_chat',
+    required String source,
   }) async {
     final ids = <int>[];
     for (final bill in bills) {

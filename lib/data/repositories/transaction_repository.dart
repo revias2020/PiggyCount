@@ -515,6 +515,13 @@ class TransactionRepository {
         .getSingleOrNull();
   }
 
+  Future<Transaction?> getBySyncId(String syncId) {
+    return (_db.select(_db.transactions)
+          ..where((t) => t.syncId.equals(syncId))
+          ..where((t) => t.deletedAt.isNull()))
+        .getSingleOrNull();
+  }
+
   /// 导出用：按账本拉取账单（[ledgerId] 为空则全部账本）。
   Future<List<TransactionListItem>> listForExport({int? ledgerId}) async {
     final query = _db.select(_db.transactions).join([

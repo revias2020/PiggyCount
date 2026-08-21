@@ -2576,13 +2576,13 @@ class Transaction extends DataClass implements Insertable<Transaction> {
   final DateTime happenedAt;
   final String? note;
 
-  /// `manual` | `voice` | `screenshot` | `share` | `ai_chat`
+  /// `manual` | `voice` | `screenshot` | `share`；历史可含已下线的 `ai_chat`
   final String source;
 
-  /// 遗留列；跨设备认亲以 [fingerprint] 为准（ADR-042）。
+  /// 跨设备身份（创建时 UUID，ADR-044）。
   final String syncId;
 
-  /// 账单指纹：账本 UUID + 金额到分 + 账单时间到秒。
+  /// 内容签名：账本 UUID + 金额到分 + 账单时间到秒；用于去重，不是身份。
   final String fingerprint;
   final DateTime createdAt;
   final DateTime updatedAt;

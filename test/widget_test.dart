@@ -31,7 +31,11 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
 
-    expect(find.text('小猪记账'), findsOneWidget);
+    // 明细 Tab 自绘顶栏：品牌图 + 账本名（无「小猪记账」文字）
+    expect(
+      find.image(const AssetImage('assets/brand/piggyCount.png')),
+      findsOneWidget,
+    );
     expect(find.text('日常账本'), findsOneWidget);
     expect(find.text('明细'), findsWidgets);
     expect(find.text('报表'), findsWidgets);

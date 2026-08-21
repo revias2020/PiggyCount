@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../../providers/ledger_session_provider.dart';
+import '../../providers/pending_review_providers.dart';
 import '../../services/sync/cloud_sync_actions.dart';
 import '../../services/sync/cloud_sync_providers.dart';
 import '../../styles/tokens.dart';
@@ -10,16 +11,24 @@ import '../../utils/money_format.dart';
 import '../ledger_list_sheet.dart';
 import 'year_month_grid_sheet.dart';
 
-/// 明细一体顶栏：品牌图标 + 账本 + 日历 + 同步 + 搜索。
+const VisualDensity _kTopBarIconDensity =
+    VisualDensity(horizontal: -2, vertical: -2);
+const BoxConstraints _kTopBarIconConstraints =
+    BoxConstraints(minWidth: 40, minHeight: 40);
+const EdgeInsets _kTopBarIconPadding = EdgeInsets.all(8);
+
+/// 明细一体顶栏：品牌图标 + 账本 + 日历 + 同步 + 信封 + 搜索。
 class DetailsTopBar extends ConsumerWidget {
   const DetailsTopBar({
     super.key,
     required this.onOpenCalendar,
     required this.onOpenSearch,
+    this.onOpenPendingReview,
   });
 
   final VoidCallback onOpenCalendar;
   final VoidCallback onOpenSearch;
+  final VoidCallback? onOpenPendingReview;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -49,7 +58,7 @@ class DetailsTopBar extends ConsumerWidget {
                   size: 34,
                 ),
               ),
-              const SizedBox(width: PigTokens.spaceMd),
+              const SizedBox(width: 2),
               Flexible(
                 child: Align(
                   alignment: Alignment.centerLeft,
@@ -57,10 +66,8 @@ class DetailsTopBar extends ConsumerWidget {
                     borderRadius: BorderRadius.circular(PigTokens.radiusPill),
                     onTap: () => showLedgerListSheet(context),
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 6,
-                      ),
+                      // 相对对称 6/6 光学下移 1px
+                      padding: const EdgeInsets.fromLTRB(8, 7, 8, 5),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -69,7 +76,7 @@ class DetailsTopBar extends ConsumerWidget {
                               name,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
-                                fontSize: 15,
+                                fontSize: 17,
                                 fontWeight: FontWeight.w500,
                                 color: PigTokens.primary,
                               ),
@@ -92,17 +99,49 @@ class DetailsTopBar extends ConsumerWidget {
                 onPressed: onOpenCalendar,
                 icon: const Icon(Icons.calendar_month_outlined),
                 color: PigTokens.textPrimary,
+                visualDensity: _kTopBarIconDensity,
+                constraints: _kTopBarIconConstraints,
+                padding: _kTopBarIconPadding,
               ),
               _DetailsSyncButton(),
+              _PendingReviewButton(onPressed: onOpenPendingReview),
               IconButton(
                 tooltip: '搜索',
                 onPressed: onOpenSearch,
                 icon: const Icon(Icons.search),
                 color: PigTokens.textPrimary,
+                visualDensity: _kTopBarIconDensity,
+                constraints: _kTopBarIconConstraints,
+                padding: _kTopBarIconPadding,
               ),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _PendingReviewButton extends ConsumerWidget {
+  const _PendingReviewButton({this.onPressed});
+
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final hasUnread = ref.watch(pendingReviewHasUnreadProvider);
+    return IconButton(
+      tooltip: '待核对',
+      onPressed: onPressed,
+      color: PigTokens.textPrimary,
+      visualDensity: _kTopBarIconDensity,
+      constraints: _kTopBarIconConstraints,
+      padding: _kTopBarIconPadding,
+      icon: Badge(
+        isLabelVisible: hasUnread,
+        smallSize: 8,
+        backgroundColor: PigTokens.danger,
+        child: const Icon(Icons.mail_outline),
       ),
     );
   }
@@ -120,6 +159,9 @@ class _DetailsSyncButton extends ConsumerWidget {
           : null,
       icon: const Icon(Icons.sync_outlined),
       color: ready ? PigTokens.textPrimary : PigTokens.textTertiary,
+      visualDensity: _kTopBarIconDensity,
+      constraints: _kTopBarIconConstraints,
+      padding: _kTopBarIconPadding,
     );
   }
 }

@@ -3,11 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../../data/repositories/statistics_repository.dart';
-import '../../providers/ai_providers.dart';
 import '../../providers/report_providers.dart';
 import '../../styles/tokens.dart';
 import '../../utils/report_period.dart';
-import '../../widgets/ai_fab.dart';
 import '../../widgets/empty_state.dart';
 import '../../widgets/page_status.dart';
 import '../../widgets/report/report_compare_rank_card.dart';
@@ -15,7 +13,6 @@ import '../../widgets/report/report_composition_card.dart';
 import '../../widgets/report/report_period_pickers.dart';
 import '../../widgets/report/report_summary_card.dart';
 import '../../widgets/report/report_trend_chart.dart';
-import '../ai/ai_chat_page.dart';
 import '../transaction/category_detail_page.dart';
 import '../transaction/rank_full_page.dart';
 import '../transaction/record_editor_sheet.dart';
@@ -34,87 +31,71 @@ class ReportPage extends ConsumerWidget {
     final period = ref.watch(reportPeriodProvider);
     final asyncSnap = ref.watch(reportSnapshotProvider);
     final dim = ref.watch(compositionDimProvider);
-    final aiEnabled =
-        ref.watch(aiAssistantEnabledProvider).valueOrNull ?? true;
 
-    return Stack(
-      fit: StackFit.expand,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _ScopeTabs(
-              scope: scope,
-              onChanged: (s) {
-                ref.read(reportScopeProvider.notifier).state = s;
-                if (s != ReportScope.custom) {
-                  ref.read(reportAnchorProvider.notifier).state =
-                      DateTime.now();
-                }
-              },
-            ),
-            _PeriodAndTypeBar(
-              scope: scope,
-              period: period,
-              moneyType: moneyType,
-              onPrev: () => _shiftPeriod(ref, -1),
-              onNext: () => _shiftPeriod(ref, 1),
-              onPickPeriod: () => _pickPeriod(context, ref),
-              onTypeChanged: (t) {
-                ref.read(reportMoneyTypeProvider.notifier).state = t;
-              },
-            ),
-            Expanded(
-              child: asyncSnap.when(
-                // 再显刷新时保留旧快照，避免整页闪骨架（ADR-005）。
-                skipLoadingOnReload: true,
-                skipLoadingOnRefresh: true,
-                loading: () => const AppLoading(message: '加载报表…'),
-                error: (e, _) => AppErrorState(
-                  message: '报表加载失败，请稍后重试',
-                  onRetry: () => ref.invalidate(reportSnapshotProvider),
-                ),
-                data: (snap) {
-                  if (snap == null) {
-                    return const EmptyState(
-                      icon: Icons.pie_chart_outline,
-                      message: '暂无报表数据',
-                      detail: '请先选择账本',
-                    );
-                  }
-                  final empty = snap.periodTotal <= 0 &&
-                      snap.incomeTotal <= 0 &&
-                      snap.expenseTotal <= 0;
-                  if (empty) {
-                    return const EmptyState(
-                      icon: Icons.pie_chart_outline,
-                      message: '暂无报表数据',
-                      detail: '记几笔账之后这里会展示趋势与分类构成',
-                    );
-                  }
-                  return _ReportBody(
-                    scope: scope,
-                    period: period,
-                    moneyType: moneyType,
-                    dim: dim,
-                    snap: snap,
-                    onDimChanged: (d) {
-                      ref.read(compositionDimProvider.notifier).state = d;
-                    },
-                  );
-                },
-              ),
-            ),
-          ],
+        _ScopeTabs(
+          scope: scope,
+          onChanged: (s) {
+            ref.read(reportScopeProvider.notifier).state = s;
+            if (s != ReportScope.custom) {
+              ref.read(reportAnchorProvider.notifier).state = DateTime.now();
+            }
+          },
         ),
-        if (aiEnabled)
-          AiFab(
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const AiChatPage()),
+        _PeriodAndTypeBar(
+          scope: scope,
+          period: period,
+          moneyType: moneyType,
+          onPrev: () => _shiftPeriod(ref, -1),
+          onNext: () => _shiftPeriod(ref, 1),
+          onPickPeriod: () => _pickPeriod(context, ref),
+          onTypeChanged: (t) {
+            ref.read(reportMoneyTypeProvider.notifier).state = t;
+          },
+        ),
+        Expanded(
+          child: asyncSnap.when(
+            // 再显刷新时保留旧快照，避免整页闪骨架（ADR-005）。
+            skipLoadingOnReload: true,
+            skipLoadingOnRefresh: true,
+            loading: () => const AppLoading(message: '加载报表…'),
+            error: (e, _) => AppErrorState(
+              message: '报表加载失败，请稍后重试',
+              onRetry: () => ref.invalidate(reportSnapshotProvider),
+            ),
+            data: (snap) {
+              if (snap == null) {
+                return const EmptyState(
+                  icon: Icons.pie_chart_outline,
+                  message: '暂无报表数据',
+                  detail: '请先选择账本',
+                );
+              }
+              final empty = snap.periodTotal <= 0 &&
+                  snap.incomeTotal <= 0 &&
+                  snap.expenseTotal <= 0;
+              if (empty) {
+                return const EmptyState(
+                  icon: Icons.pie_chart_outline,
+                  message: '暂无报表数据',
+                  detail: '记几笔账之后这里会展示趋势与分类构成',
+                );
+              }
+              return _ReportBody(
+                scope: scope,
+                period: period,
+                moneyType: moneyType,
+                dim: dim,
+                snap: snap,
+                onDimChanged: (d) {
+                  ref.read(compositionDimProvider.notifier).state = d;
+                },
               );
             },
           ),
+        ),
       ],
     );
   }

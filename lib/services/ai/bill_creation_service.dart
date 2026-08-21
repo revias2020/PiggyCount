@@ -74,10 +74,12 @@ class BillCreationService {
   }
 
   /// 保存一笔；失败返回 null。
+  ///
+  /// [source] 须由调用方显式传入（历史取值可含已下线的 `ai_chat`）。
   Future<int?> createFromBill({
     required BillInfo bill,
     required int ledgerId,
-    String source = 'ai_chat',
+    required String source,
   }) async {
     final amount = bill.amount;
     if (amount == null || amount <= 0) return null;

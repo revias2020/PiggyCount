@@ -81,7 +81,7 @@ class Transactions extends Table {
   IntColumn get categoryId => integer().nullable()();
   DateTimeColumn get happenedAt => dateTime()();
   TextColumn get note => text().nullable()();
-  /// `manual` | `voice` | `screenshot` | `share` | `ai_chat`
+  /// `manual` | `voice` | `screenshot` | `share`；历史可含已下线的 `ai_chat`
   TextColumn get source => text().withDefault(const Constant('manual'))();
   /// 跨设备身份（创建时 UUID，ADR-044）。
   TextColumn get syncId => text()();

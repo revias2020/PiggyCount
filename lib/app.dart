@@ -10,6 +10,7 @@ import 'pages/transaction/record_editor_sheet.dart';
 import 'providers/automation_providers.dart';
 import 'providers/database_provider.dart';
 import 'providers/deep_link_providers.dart';
+import 'providers/pending_review_providers.dart';
 import 'providers/report_providers.dart';
 import 'providers/tab_index_provider.dart';
 import 'providers/widget_providers.dart';
@@ -55,6 +56,20 @@ class _PiggyAppState extends ConsumerState<PiggyApp>
     WidgetsBinding.instance.removeObserver(this);
     _appLinkListener?.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final pending = ref.read(pendingReviewProvider.notifier);
+    switch (state) {
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.detached:
+        pending.clearHighlights();
+      case AppLifecycleState.resumed:
+        pending.reapplyHighlights();
+    }
   }
 
   /// 吞掉 Flutter 内置深链，避免 Navigator.pushNamed('/?type=expense')。
@@ -142,6 +157,15 @@ class _PiggyAppState extends ConsumerState<PiggyApp>
     ref.read(tabIndexProvider.notifier).state = 0;
     final nav = rootNavigatorKey.currentState;
     nav?.popUntil((r) => r.isFirst);
+
+    if (action == BillingNotificationAction.success) {
+      final syncId =
+          ref.read(billingNotificationServiceProvider).lastSuccessSyncId;
+      if (syncId != null && syncId.isNotEmpty) {
+        ref.read(pendingReviewProvider.notifier).requestJump(syncId);
+      }
+      return;
+    }
 
     if (action != BillingNotificationAction.failure) return;
 
