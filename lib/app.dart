@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -69,6 +70,7 @@ class _PiggyAppState extends ConsumerState<PiggyApp>
         pending.clearHighlights();
       case AppLifecycleState.resumed:
         pending.reapplyHighlights();
+        unawaited(ref.read(autoBillingServiceProvider).retryPendingOnResume());
     }
   }
 
@@ -95,6 +97,7 @@ class _PiggyAppState extends ConsumerState<PiggyApp>
         widgetInteractivityCallback,
       );
       await _shareHandler.bind();
+      unawaited(ref.read(autoBillingServiceProvider).retryPendingOnResume());
       final enabled =
           await ref.read(settingsRepositoryProvider).screenshotAutoBilling();
       if (enabled) {
@@ -169,14 +172,15 @@ class _PiggyAppState extends ConsumerState<PiggyApp>
 
     if (action != BillingNotificationAction.failure) return;
 
-    final body = ref.read(billingNotificationServiceProvider).lastFailureBody;
+    final notifications = ref.read(billingNotificationServiceProvider);
+    final body = notifications.lastFailureBody;
     if (body == null || body.isEmpty) return;
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final ctx = rootNavigatorKey.currentContext;
       if (ctx == null || !ctx.mounted) return;
-      final title =
-          body.contains('已存在相同账本') ? '记账取消' : '记账失败';
+      final title = notifications.lastFailureTitle ??
+          (body.contains('已存在相同账本') ? '记账取消' : '记账失败');
       showDialog<void>(
         context: ctx,
         builder: (dialogCtx) => AlertDialog(

@@ -5,7 +5,10 @@ import '../ai/ai_provider_store.dart';
 import '../ai/extraction_engine.dart';
 import '../services/ai/ai_bookkeeper.dart';
 import '../services/ai/bill_creation_service.dart';
+import '../services/ai/offline_asr_model_store.dart';
 import '../services/ai/speech_asr_service.dart';
+import '../services/ai/speech_engine_preference.dart';
+import '../services/ai/voice_recognition_session.dart';
 import 'database_provider.dart';
 
 final aiProviderStoreProvider = Provider((ref) => AiProviderStore());
@@ -53,6 +56,29 @@ final aiBookkeeperProvider = Provider(
 );
 
 final speechAsrServiceProvider = Provider((ref) => SpeechAsrService());
+
+final speechEnginePreferenceStoreProvider =
+    Provider((ref) => SpeechEnginePreferenceStore());
+
+final speechEngineKindProvider =
+    FutureProvider<SpeechRecognitionEngineKind>((ref) {
+  return ref.watch(speechEnginePreferenceStoreProvider).load();
+});
+
+final offlineAsrModelStoreProvider = Provider((ref) => OfflineAsrModelStore());
+
+final voiceRecognitionSessionProvider = Provider((ref) {
+  return VoiceRecognitionSession(
+    preferenceStore: ref.watch(speechEnginePreferenceStoreProvider),
+    offlineStore: ref.watch(offlineAsrModelStoreProvider),
+    aiStore: ref.watch(aiProviderStoreProvider),
+    systemAsr: ref.watch(speechAsrServiceProvider),
+  );
+});
+
+final systemAsrAvailableProvider = FutureProvider<bool>((ref) {
+  return ref.watch(voiceRecognitionSessionProvider).isSystemAvailable();
+});
 
 final autoGenerateTagsProvider = StreamProvider<bool>((ref) {
   return ref.watch(settingsRepositoryProvider).watchAutoGenerateTags();

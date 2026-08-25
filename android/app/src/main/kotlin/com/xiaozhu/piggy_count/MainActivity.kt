@@ -31,7 +31,8 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     private var screenshotObserver: ScreenshotObserver? = null
-    private var pendingSharedPath: String? = null
+    private var pendingSharedPaths: ArrayList<String>? = null
+    private var pendingSharedTruncated: Boolean = false
     private var flutterEngineRef: FlutterEngine? = null
     private var widgetRefreshReceiver: BroadcastReceiver? = null
 
@@ -82,9 +83,27 @@ class MainActivity : FlutterFragmentActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SHARE_CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
+                    "getPendingSharedImages" -> {
+                        val paths = pendingSharedPaths
+                        val truncated = pendingSharedTruncated
+                        pendingSharedPaths = null
+                        pendingSharedTruncated = false
+                        if (paths.isNullOrEmpty()) {
+                            result.success(null)
+                        } else {
+                            result.success(
+                                mapOf(
+                                    "paths" to paths,
+                                    "truncated" to truncated,
+                                ),
+                            )
+                        }
+                    }
                     "getPendingSharedImage" -> {
-                        val path = pendingSharedPath
-                        pendingSharedPath = null
+                        // 兼容旧单路径
+                        val path = pendingSharedPaths?.firstOrNull()
+                        pendingSharedPaths = null
+                        pendingSharedTruncated = false
                         result.success(path)
                     }
                     else -> result.notImplemented()
@@ -105,6 +124,26 @@ class MainActivity : FlutterFragmentActivity() {
                         moveTaskToBack(true)
                         result.success(null)
                     }
+                    "startBillingForeground" -> {
+                        val args = call.arguments as? Map<*, *>
+                        val title = args?.get("title") as? String ?: "智能记账"
+                        val body = args?.get("body") as? String ?: "识别进行中…"
+                        AutoBillingForegroundService.start(this, title, body)
+                        Log.i(TAG, "startBillingForeground")
+                        result.success(null)
+                    }
+                    "updateBillingForeground" -> {
+                        val args = call.arguments as? Map<*, *>
+                        val title = args?.get("title") as? String ?: "智能记账"
+                        val body = args?.get("body") as? String ?: ""
+                        AutoBillingForegroundService.update(this, title, body)
+                        result.success(null)
+                    }
+                    "stopBillingForeground" -> {
+                        AutoBillingForegroundService.stop(this)
+                        Log.i(TAG, "stopBillingForeground")
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -115,44 +154,61 @@ class MainActivity : FlutterFragmentActivity() {
         registerWidgetRefreshReceiver()
 
         // 若冷启动时已拷好分享图，延迟通知 Dart
-        pendingSharedPath?.let { path ->
+        pendingSharedPaths?.let { paths ->
+            val truncated = pendingSharedTruncated
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                notifyShared(path)
+                notifyShared(paths, truncated)
             }, 600)
         }
     }
 
     private fun handleSharedImage(intent: Intent?) {
         // 优先：ShareRelay 已拷好的路径（热启走 onNewIntent，冷启走 onCreate）
-        SharedImageIngress.pathFromIntent(intent)?.let { path ->
-            pendingSharedPath = path
-            Log.i(TAG, "shared image path: $path")
+        SharedImageIngress.pathsFromIntent(intent)?.let { copied ->
+            pendingSharedPaths = copied.paths
+            pendingSharedTruncated = copied.truncated
+            Log.i(
+                TAG,
+                "shared image paths: ${copied.paths.size}" +
+                    if (copied.truncated) " truncated" else "",
+            )
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                notifyShared(path)
+                notifyShared(copied.paths, copied.truncated)
             }, 500)
             return
         }
 
-        // 兼容：若仍有 ACTION_SEND 直达（旧入口 / 调试）
-        val uri = SharedImageIngress.imageUriFromSend(intent) ?: return
+        // 兼容：若仍有 ACTION_SEND / SEND_MULTIPLE 直达（旧入口 / 调试）
+        val uris = SharedImageIngress.imageUrisFromIntent(intent)
+        if (uris.isEmpty()) return
         try {
-            val path = SharedImageIngress.copyToCache(this, uri) ?: return
-            pendingSharedPath = path
-            Log.i(TAG, "shared image saved: $path")
+            val copied = SharedImageIngress.copyUrisToCache(this, uris)
+            if (copied.paths.isEmpty()) return
+            pendingSharedPaths = copied.paths
+            pendingSharedTruncated = copied.truncated
+            Log.i(TAG, "shared images saved: ${copied.paths.size}")
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                notifyShared(path)
+                notifyShared(copied.paths, copied.truncated)
             }, 500)
         } catch (e: Exception) {
             Log.e(TAG, "handleSharedImage failed", e)
         }
     }
 
-    private fun notifyShared(path: String) {
+    private fun notifyShared(paths: List<String>, truncated: Boolean) {
+        if (paths.isEmpty()) return
         try {
             val messenger = flutterEngineRef?.dartExecutor?.binaryMessenger ?: return
-            MethodChannel(messenger, SHARE_CHANNEL).invokeMethod("onImageShared", path)
+            MethodChannel(messenger, SHARE_CHANNEL).invokeMethod(
+                "onImagesShared",
+                mapOf(
+                    "paths" to paths,
+                    "truncated" to truncated,
+                ),
+            )
             // 已推送则清空 pending，避免 getPending 重复
-            if (pendingSharedPath == path) pendingSharedPath = null
+            pendingSharedPaths = null
+            pendingSharedTruncated = false
         } catch (e: Exception) {
             Log.e(TAG, "notifyShared failed", e)
         }

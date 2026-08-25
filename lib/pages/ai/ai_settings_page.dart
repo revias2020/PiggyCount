@@ -4,12 +4,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../ai/ai_provider_config.dart';
 import '../../ai/ai_provider_store.dart';
 import '../../providers/ai_providers.dart';
+import '../../services/ai/offline_asr_model_store.dart';
+import '../../services/ai/speech_engine_preference.dart';
 import '../../styles/tokens.dart';
 import '../../widgets/ai/ai_setup_helpers.dart';
 import '../../widgets/page_status.dart';
 import 'ai_provider_manage_page.dart';
 
-/// AI 设置：服务商管理入口 + 文本/视觉能力绑定（ADR-009 / ADR-032）。
+/// AI 设置：服务商管理入口 + 文本/视觉/语音能力绑定 + 语音识别引擎（ADR-009 / ADR-032 / ADR-052）。
 class AiSettingsPage extends ConsumerWidget {
   const AiSettingsPage({super.key});
 
@@ -109,15 +111,348 @@ class AiSettingsPage extends ConsumerWidget {
                           ref.invalidate(aiCapabilityBindingProvider);
                         },
                       ),
+                      const Divider(height: 24),
+                      _CapabilityTile(
+                        icon: Icons.mic_outlined,
+                        title: '语音记账',
+                        currentId: binding.voiceProviderId,
+                        allProviders: providers,
+                        providers: providers
+                            .where((p) => p.voiceReadyForCapability)
+                            .toList(),
+                        onSelected: (id) async {
+                          await ref.read(aiProviderStoreProvider).saveBinding(
+                                binding.copyWith(voiceProviderId: id),
+                              );
+                          ref.invalidate(aiCapabilityBindingProvider);
+                        },
+                      ),
                     ],
                   ),
                 ),
+                const SizedBox(height: PigTokens.spaceMd),
+                _SpeechRecognitionSection(providers: providers),
               ],
             );
           },
         ),
       ),
     );
+  }
+}
+
+/// 语音识别引擎选择与离线模型下载（ADR-052）。
+class _SpeechRecognitionSection extends ConsumerStatefulWidget {
+  const _SpeechRecognitionSection({required this.providers});
+
+  final List<AiServiceProvider> providers;
+
+  @override
+  ConsumerState<_SpeechRecognitionSection> createState() =>
+      _SpeechRecognitionSectionState();
+}
+
+class _SpeechRecognitionSectionState
+    extends ConsumerState<_SpeechRecognitionSection> {
+  bool? _voskReady;
+  bool? _whisperReady;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshOfflineReady();
+  }
+
+  Future<void> _refreshOfflineReady() async {
+    final store = ref.read(offlineAsrModelStoreProvider);
+    final vosk = await store.isReady(OfflineAsrModelCatalog.vosk);
+    final whisper = await store.isReady(OfflineAsrModelCatalog.whisper);
+    if (!mounted) return;
+    setState(() {
+      _voskReady = vosk;
+      _whisperReady = whisper;
+    });
+  }
+
+  Future<void> _saveEngine(SpeechRecognitionEngineKind kind) async {
+    await ref.read(speechEnginePreferenceStoreProvider).save(kind);
+    ref.invalidate(speechEngineKindProvider);
+  }
+
+  Future<void> _selectOffline(SpeechRecognitionEngineKind kind) async {
+    final spec = OfflineAsrModelCatalog.forEngine(kind);
+    if (spec == null) return;
+    final store = ref.read(offlineAsrModelStoreProvider);
+    final ready = await store.isReady(spec);
+    if (!ready) {
+      final ok = await _downloadWithProgress(spec);
+      if (!ok || !mounted) return;
+      await _refreshOfflineReady();
+    }
+    if (!mounted) return;
+    await _saveEngine(kind);
+  }
+
+  Future<bool> _downloadWithProgress(OfflineAsrModelSpec spec) async {
+    final progressNotifier = ValueNotifier<double>(0);
+    final statusNotifier = ValueNotifier<String>('准备下载…');
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return PopScope(
+          canPop: false,
+          child: AlertDialog(
+            title: Text('下载 ${spec.displayName}'),
+            content: ValueListenableBuilder<double>(
+              valueListenable: progressNotifier,
+              builder: (_, value, __) {
+                return ValueListenableBuilder<String>(
+                  valueListenable: statusNotifier,
+                  builder: (_, status, __) {
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        LinearProgressIndicator(
+                          value: value <= 0 ? null : value.clamp(0.0, 1.0),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          value <= 0
+                              ? status
+                              : '${(value * 100).clamp(0, 100).toStringAsFixed(0)}% · $status',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: PigTokens.textSecondary,
+                          ),
+                        ),
+                        if (spec.hasForeignFallback) ...[
+                          const SizedBox(height: 12),
+                          const Text(
+                            '优先国内镜像；若切换至官方源，可能需要 VPN 或代理。',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: PigTokens.textTertiary,
+                            ),
+                          ),
+                        ],
+                      ],
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        );
+      },
+    );
+
+    try {
+      await ref.read(offlineAsrModelStoreProvider).download(
+            spec,
+            onProgress: (p) => progressNotifier.value = p,
+            onSourceAttempt: (source) {
+              statusNotifier.value = source.requiresVpnHint
+                  ? '正在从${source.label}下载（可能需要 VPN）…'
+                  : '正在从${source.label}下载…';
+            },
+          );
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+      progressNotifier.dispose();
+      statusNotifier.dispose();
+      return true;
+    } catch (e) {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+      progressNotifier.dispose();
+      statusNotifier.dispose();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e')),
+        );
+      }
+      return false;
+    }
+  }
+
+  Future<void> _selectAiVoice() async {
+    final voiceReady =
+        widget.providers.any((p) => p.voiceReadyForCapability);
+    if (!voiceReady) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('请先配置并测通支持语音的服务商，再绑定「语音记账」'),
+        ),
+      );
+      return;
+    }
+    await _saveEngine(SpeechRecognitionEngineKind.aiVoice);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final engineAsync = ref.watch(speechEngineKindProvider);
+    final systemAsync = ref.watch(systemAsrAvailableProvider);
+    final current = engineAsync.valueOrNull;
+    final systemOk = systemAsync.valueOrNull ?? false;
+
+    return aiSectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '语音识别',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            current == null
+                ? '当前引擎：加载中…'
+                : '当前引擎：${current.label}',
+            style: const TextStyle(
+              fontSize: 12,
+              color: PigTokens.textTertiary,
+            ),
+          ),
+          const SizedBox(height: PigTokens.spaceMd),
+          const Text(
+            '离线模型需单独下载，优先国内镜像；失败将自动尝试官方源，'
+            '访问国外源可能需要 VPN 或代理。',
+            style: TextStyle(
+              fontSize: 12,
+              color: PigTokens.textTertiary,
+            ),
+          ),
+          const SizedBox(height: PigTokens.spaceMd),
+          GridView(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              mainAxisSpacing: PigTokens.spaceSm,
+              crossAxisSpacing: PigTokens.spaceSm,
+              mainAxisExtent: 56,
+            ),
+            children: [
+              _EngineTile(
+                title: SpeechRecognitionEngineKind.system.label,
+                selected: current == SpeechRecognitionEngineKind.system,
+                enabled: systemOk,
+                subtitle: systemOk ? null : '本机不可用',
+                onTap: systemOk
+                    ? () => _saveEngine(SpeechRecognitionEngineKind.system)
+                    : null,
+              ),
+              _EngineTile(
+                title: SpeechRecognitionEngineKind.vosk.label,
+                selected: current == SpeechRecognitionEngineKind.vosk,
+                subtitle: _offlineSubtitle(_voskReady),
+                onTap: () => _selectOffline(SpeechRecognitionEngineKind.vosk),
+              ),
+              _EngineTile(
+                title: SpeechRecognitionEngineKind.whisper.label,
+                selected: current == SpeechRecognitionEngineKind.whisper,
+                subtitle: _offlineSubtitle(_whisperReady),
+                onTap: () => _selectOffline(SpeechRecognitionEngineKind.whisper),
+              ),
+              _EngineTile(
+                title: SpeechRecognitionEngineKind.aiVoice.label,
+                selected: current == SpeechRecognitionEngineKind.aiVoice,
+                subtitle: widget.providers.any((p) => p.voiceReadyForCapability)
+                    ? null
+                    : '未配置',
+                onTap: _selectAiVoice,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _offlineSubtitle(bool? ready) {
+    if (ready == null) return '检查中…';
+    return ready ? '已下载' : '未下载（点此下载）';
+  }
+}
+
+class _EngineTile extends StatelessWidget {
+  const _EngineTile({
+    required this.title,
+    required this.selected,
+    required this.onTap,
+    this.subtitle,
+    this.enabled = true,
+  });
+
+  final String title;
+  final bool selected;
+  final String? subtitle;
+  final VoidCallback? onTap;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final radius = BorderRadius.circular(PigTokens.radiusCard - 4);
+    final tile = Material(
+      color: selected ? PigTokens.primarySoft : PigTokens.surfaceSecondary,
+      borderRadius: radius,
+      child: InkWell(
+        onTap: enabled ? onTap : null,
+        borderRadius: radius,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: PigTokens.spaceSm,
+            vertical: 6,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        height: 1.2,
+                        color: enabled ? null : PigTokens.textTertiary,
+                      ),
+                    ),
+                  ),
+                  if (selected)
+                    const Icon(
+                      Icons.check,
+                      size: 16,
+                      color: PigTokens.primary,
+                    ),
+                ],
+              ),
+              if (subtitle != null) ...[
+                const SizedBox(height: 2),
+                Text(
+                  subtitle!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: PigTokens.textTertiary,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+    if (enabled) return tile;
+    return Opacity(opacity: 0.45, child: tile);
   }
 }
 

@@ -33,6 +33,7 @@ void main() {
           baseUrl: 'https://example.com/v1',
           textModel: 't',
           visionModel: 'v',
+          voiceModel: '',
           createdAt: DateTime(2024),
           visionTestStatus: AiModelTestStatus.success,
         );

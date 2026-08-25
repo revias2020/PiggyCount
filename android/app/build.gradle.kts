@@ -8,7 +8,8 @@ android {
     namespace = "com.xiaozhu.piggy_count"
     // permission_handler_android 要求 compileSdk ≥ 37
     compileSdk = 37
-    ndkVersion = flutter.ndkVersion
+    // 与本机已装 NDK 对齐；whisper_ggml 声明要 29，由根 build.gradle 统一压到此版本
+    ndkVersion = "28.2.13676358"
 
     compileOptions {
         // flutter_local_notifications 需要 desugaring

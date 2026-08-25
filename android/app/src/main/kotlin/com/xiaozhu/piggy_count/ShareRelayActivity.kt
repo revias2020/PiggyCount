@@ -10,28 +10,43 @@ import android.util.Log
  *
  * 热启动时直接打进已有 [MainActivity]（SINGLE_TOP|CLEAR_TOP|NEW_TASK），
  * 避免分享 Intent 把带 LaunchTheme 的主界面再走一遍 onCreate 闪启动页。
+ *
+ * 支持单张 [Intent.ACTION_SEND] 与多选 [Intent.ACTION_SEND_MULTIPLE]（ADR-058）。
  */
 class ShareRelayActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         try {
-            val uri = SharedImageIngress.imageUriFromSend(intent)
-            if (uri == null) {
+            val uris = SharedImageIngress.imageUrisFromIntent(intent)
+            if (uris.isEmpty()) {
                 Log.w(TAG, "share relay: no image uri")
                 finish()
                 return
             }
-            val path = SharedImageIngress.copyToCache(this, uri)
-            if (path == null) {
+            val copied = SharedImageIngress.copyUrisToCache(this, uris)
+            if (copied.paths.isEmpty()) {
                 Log.e(TAG, "share relay: copy failed")
                 finish()
                 return
             }
-            Log.i(TAG, "share relay → MainActivity: $path")
+            Log.i(
+                TAG,
+                "share relay → MainActivity: ${copied.paths.size} path(s)" +
+                    if (copied.truncated) " truncated" else "",
+            )
             startActivity(
                 Intent(this, MainActivity::class.java).apply {
                     action = SharedImageIngress.ACTION_SHARED_IMAGE
-                    putExtra(SharedImageIngress.EXTRA_SHARED_IMAGE_PATH, path)
+                    putStringArrayListExtra(
+                        SharedImageIngress.EXTRA_SHARED_IMAGE_PATHS,
+                        copied.paths,
+                    )
+                    putExtra(SharedImageIngress.EXTRA_SHARED_TRUNCATED, copied.truncated)
+                    // 兼容旧单路径读取
+                    putExtra(
+                        SharedImageIngress.EXTRA_SHARED_IMAGE_PATH,
+                        copied.paths.first(),
+                    )
                     addFlags(
                         Intent.FLAG_ACTIVITY_NEW_TASK or
                             Intent.FLAG_ACTIVITY_SINGLE_TOP or

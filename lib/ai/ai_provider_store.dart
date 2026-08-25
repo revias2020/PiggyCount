@@ -108,9 +108,11 @@ class AiProviderStore {
 
   Future<AiServiceProvider> resolve(AiCapabilityKind kind) async {
     final binding = await loadBinding();
-    final id = kind == AiCapabilityKind.text
-        ? binding.textProviderId
-        : binding.visionProviderId;
+    final id = switch (kind) {
+      AiCapabilityKind.text => binding.textProviderId,
+      AiCapabilityKind.vision => binding.visionProviderId,
+      AiCapabilityKind.voice => binding.voiceProviderId,
+    };
     if (id == null || id.isEmpty) {
       throw AiCapabilityNotReadyException(
         '未绑定「${kind.label}」服务商，请到「我的 → AI 设置」配置',
@@ -137,6 +139,11 @@ class AiProviderStore {
         '「${provider.name}」未填写视觉模型，请到服务商编辑页配置',
       );
     }
+    if (kind == AiCapabilityKind.voice && !provider.supportsVoice) {
+      throw AiCapabilityNotReadyException(
+        '「${provider.name}」未填写语音模型，请到服务商编辑页配置',
+      );
+    }
     if (kind == AiCapabilityKind.text && !provider.textReadyForCapability) {
       throw AiCapabilityNotReadyException(
         '「${provider.name}」文本模型未通过连接测试，请到服务商编辑页保存以完成测连',
@@ -145,6 +152,11 @@ class AiProviderStore {
     if (kind == AiCapabilityKind.vision && !provider.visionReadyForCapability) {
       throw AiCapabilityNotReadyException(
         '「${provider.name}」视觉模型未通过连接测试，请到服务商编辑页保存以完成测连',
+      );
+    }
+    if (kind == AiCapabilityKind.voice && !provider.voiceReadyForCapability) {
+      throw AiCapabilityNotReadyException(
+        '「${provider.name}」语音模型未通过连接测试，请到服务商编辑页保存以完成测连',
       );
     }
     return provider;
@@ -171,8 +183,10 @@ class AiProviderStore {
     required String baseUrl,
     String textModel = 'gpt-4o-mini',
     String visionModel = 'gpt-4o-mini',
+    String voiceModel = '',
     AiModelTestStatus textTestStatus = AiModelTestStatus.untested,
     AiModelTestStatus visionTestStatus = AiModelTestStatus.untested,
+    AiModelTestStatus voiceTestStatus = AiModelTestStatus.untested,
   }) async {
     final prefs = await SharedPreferences.getInstance();
     final list = await loadProviders();
@@ -190,9 +204,11 @@ class AiProviderStore {
           : baseUrl.trim(),
       textModel: textModel,
       visionModel: visionModel,
+      voiceModel: voiceModel,
       createdAt: DateTime.now(),
       textTestStatus: textTestStatus,
       visionTestStatus: visionTestStatus,
+      voiceTestStatus: voiceTestStatus,
     );
     list.add(provider);
     await _saveProviders(prefs, list);
@@ -210,8 +226,10 @@ class AiProviderStore {
             apiKey: provider.apiKey,
             textModel: provider.textModel,
             visionModel: provider.visionModel,
+            voiceModel: provider.voiceModel,
             textTestStatus: provider.textTestStatus,
             visionTestStatus: provider.visionTestStatus,
+            voiceTestStatus: provider.voiceTestStatus,
           )
         : provider;
     list[i] = next;
@@ -236,7 +254,7 @@ class AiProviderStore {
     final binding = await loadBinding();
     if (binding.isBoundTo(id)) {
       throw AiProviderInUseException(
-        '该服务商正被「文本对话」或「图片理解」使用，请先在 AI 设置中改绑后再删除',
+        '该服务商正被「文本对话」「图片理解」或「语音直接记账」使用，请先在 AI 设置中改绑后再删除',
       );
     }
     list.removeWhere((p) => p.id == id);
@@ -255,14 +273,23 @@ class AiProviderStore {
     SharedPreferences prefs,
     List<AiServiceProvider> list,
   ) async {
-    if (list.any((p) => p.id == AiServiceProvider.zhipuId)) {
-      await _ensureBinding(prefs);
-      return list;
+    var next = list;
+    if (!next.any((p) => p.id == AiServiceProvider.zhipuId)) {
+      next = [AiServiceProvider.zhipuDefault, ...next];
+      await _saveProviders(prefs, next);
+    } else {
+      // 补齐内置智谱缺失的语音模型字段（ADR-052）。
+      final i = next.indexWhere((p) => p.id == AiServiceProvider.zhipuId);
+      if (i >= 0 && next[i].voiceModel.trim().isEmpty) {
+        next = List<AiServiceProvider>.from(next);
+        next[i] = next[i].copyWith(
+          voiceModel: AiServiceProvider.zhipuDefaultVoiceModel,
+        );
+        await _saveProviders(prefs, next);
+      }
     }
-    list.insert(0, AiServiceProvider.zhipuDefault);
-    await _saveProviders(prefs, list);
     await _ensureBinding(prefs);
-    return list;
+    return next;
   }
 
   Future<void> _ensureBinding(SharedPreferences prefs) async {
@@ -343,6 +370,7 @@ class AiProviderStore {
             legacy.textModel.isEmpty ? 'gpt-4o-mini' : legacy.textModel,
         visionModel:
             legacy.visionModel.isEmpty ? 'gpt-4o-mini' : legacy.visionModel,
+        voiceModel: '',
         createdAt: DateTime.now(),
       );
       await _saveProviders(prefs, [AiServiceProvider.zhipuDefault, custom]);

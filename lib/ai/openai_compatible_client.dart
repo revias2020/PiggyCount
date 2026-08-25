@@ -22,6 +22,7 @@ class OpenAiCompatibleClient {
   static const testTimeout = Duration(seconds: 15);
   static const textTimeout = Duration(seconds: 30);
   static const visionTimeout = Duration(seconds: 60);
+  static const voiceTimeout = Duration(seconds: 60);
 
   /// 取消进行中的连接测试（改 Key/URL/模型时调用）。
   void cancelTests() {
@@ -79,6 +80,42 @@ class OpenAiCompatibleClient {
       messages: messages,
       temperature: 0.2,
       timeout: timeout ?? visionTimeout,
+    );
+  }
+
+  /// 语音直接记账：将音频以 input_audio 传入（OpenAI / 智谱兼容形态）。
+  Future<String> voice({
+    required AiServiceProvider provider,
+    required Uint8List audioBytes,
+    required String prompt,
+    String format = 'wav',
+    Duration? timeout,
+  }) async {
+    if (!provider.supportsVoice) {
+      throw AiClientException('请先填写语音模型');
+    }
+    final b64 = base64Encode(audioBytes);
+    final messages = [
+      {
+        'role': 'user',
+        'content': [
+          {'type': 'text', 'text': prompt},
+          {
+            'type': 'input_audio',
+            'input_audio': {
+              'data': b64,
+              'format': format,
+            },
+          },
+        ],
+      },
+    ];
+    return _postChat(
+      provider: provider,
+      model: provider.voiceModel,
+      messages: messages,
+      temperature: 0.2,
+      timeout: timeout ?? voiceTimeout,
     );
   }
 
@@ -146,6 +183,44 @@ class OpenAiCompatibleClient {
     });
   }
 
+  /// 测试语音模型（timeout 15s）：短静音 wav + 文本提示。
+  Future<void> testVoice(AiServiceProvider provider) async {
+    await _runTest((client, gen) async {
+      if (!provider.isValid) {
+        throw AiClientException('请先填写 API Key');
+      }
+      if (!provider.supportsVoice) {
+        throw AiClientException('请先填写语音模型');
+      }
+      final reply = await _postChat(
+        provider: provider,
+        model: provider.voiceModel,
+        messages: [
+          {
+            'role': 'user',
+            'content': [
+              {'type': 'text', 'text': 'hi'},
+              {
+                'type': 'input_audio',
+                'input_audio': {
+                  'data': base64Encode(_testWavBytes),
+                  'format': 'wav',
+                },
+              },
+            ],
+          },
+        ],
+        temperature: 0.2,
+        timeout: testTimeout,
+        httpClient: client,
+      );
+      _ensureNotCancelled(gen);
+      if (reply.trim().isEmpty) {
+        throw AiClientException('语音模型返回空响应');
+      }
+    });
+  }
+
   Future<void> _runTest(
     Future<void> Function(http.Client client, int gen) body,
   ) async {
@@ -193,6 +268,16 @@ class OpenAiCompatibleClient {
     'AooooAKKKKACiiigAooooAKKKKACiiigAooooA//2Q==',
   );
 
+  /// 极短静音 WAV（测连用；部分厂商仅校验音频字段存在）。
+  static final Uint8List _testWavBytes = Uint8List.fromList([
+    0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, // RIFF...
+    0x57, 0x41, 0x56, 0x45, 0x66, 0x6D, 0x74, 0x20, // WAVEfmt
+    0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, // PCM mono
+    0x40, 0x1F, 0x00, 0x00, 0x40, 0x1F, 0x00, 0x00, // 8000 Hz
+    0x01, 0x00, 0x08, 0x00, 0x64, 0x61, 0x74, 0x61, // data
+    0x00, 0x00, 0x00, 0x00,
+  ]);
+
   Future<String> _postChat({
     required AiServiceProvider provider,
     required String model,
@@ -212,6 +297,12 @@ class OpenAiCompatibleClient {
       'temperature': temperature,
     });
     final client = httpClient ?? _http;
+    if (httpClient == null) {
+      logger.info(
+        'AI',
+        '调用 provider=${provider.name} model=$model',
+      );
+    }
     late final http.Response response;
     try {
       response = await client
@@ -231,10 +322,18 @@ class OpenAiCompatibleClient {
               e.message.contains('Client is closed'))) {
         throw AiTestCancelledException();
       }
-      logger.error('AI', '网络异常 model=$model', e);
+      logger.error(
+        'AI',
+        '网络异常 provider=${provider.name} model=$model',
+        e,
+      );
       throw AiTransportException(e.message);
     } on TimeoutException catch (e) {
-      logger.error('AI', '请求超时 model=$model', e);
+      logger.error(
+        'AI',
+        '请求超时 provider=${provider.name} model=$model',
+        e,
+      );
       throw AiTransportException('请求超时');
     }
 
@@ -243,7 +342,10 @@ class OpenAiCompatibleClient {
     if (response.statusCode < 200 || response.statusCode >= 300) {
       final msg =
           'AI 请求失败(${response.statusCode}): ${_shortBody(responseText)}';
-      logger.error('AI', 'HTTP ${response.statusCode} model=$model');
+      logger.error(
+        'AI',
+        'HTTP ${response.statusCode} provider=${provider.name} model=$model',
+      );
       throw AiClientException(msg);
     }
     late final Map<String, dynamic> decoded;

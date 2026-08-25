@@ -1,7 +1,7 @@
 name: piggy_count
 description: 小猪记账 — Android / iOS 个人记账应用
 publish_to: 'none'
-version: 0.3.0+4
+version: 0.4.1+8
 
 environment:
   sdk: ^3.12.2
@@ -39,6 +39,21 @@ dependencies:
   # 桌面小组件（勿盲目升 0.9.3+，需更高 Flutter）
   home_widget: ^0.9.2
   app_links: ^6.4.0
+  crypto: ^3.0.7
+  record: ^7.1.1
+  whisper_ggml: ^2.6.0
+  # pub.dev / git 均声明 permission_handler ^11；用 override 对齐本工程 ^13（ADR-052）
+  # Android 原生 vosk/JNA 由 android/build.gradle.kts 强制 0.3.75 / 5.18.1（16 KB）
+  vosk_flutter:
+    git:
+      url: https://github.com/alphacep/vosk-flutter.git
+      ref: e655a96
+
+dependency_overrides:
+  permission_handler: ^13.0.1
+  archive: ^4.0.9
+  # whisper_ggml 约束 ^2.1.0；3.x 原生库按 16 KB 页对齐（Android 15+）
+  ffmpeg_kit_flutter_new_min: ^3.6.2
 
 dev_dependencies:
   flutter_test:

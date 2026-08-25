@@ -3,7 +3,7 @@
 > 与 [framework.md](./framework.md) **同一套功能维度**。本文件写实现：怎么跑、关键规则、代码落点。  
 > 用户安装见 [README.md](../README.md)。
 
-**版本：** `0.3.0+4`（公开源码 + GitHub Release `arm64-v8a` 测试包）· 整理 2026-08-21  
+**版本：** `0.4.0+7`（公开源码 + GitHub Release `arm64-v8a` 测试包）· 整理 2026-08-23  
 升级说明见 [version.md](./version.md)。
 
 文中「ADR-xxx」为历史决策编号索引（附录）；规则正文在各功能节。领域词见仓库根 [CONTEXT.md](../CONTEXT.md)，完整 ADR 见 [docs/adr/](./adr/)。
@@ -269,22 +269,23 @@ ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040 / 051（及明细同步钮 ADR
 **配置：**
 
 - 内置智谱（名/Base 锁死）+ ≤5 OpenAI 兼容  
-- 能力绑定：文本对话 / 图片理解 各一商；仅展示该侧**测通成功**者  
-- 测连 timeout 15s；文本识别 30s、图片识别 60s；保存时未测侧会打网；失败仍落盘但留页；绑定中的自定义商禁删  
-- M1：旧单配置迁到内置或新建自定义并双绑  
+- 能力绑定：文本对话 / 图片理解 / **语音直接记账** 各一商；仅展示该侧**测通成功**者（语音模型可空=该商不支持）
+- 测连 timeout 15s；文本识别 30s、图片/语音识别 60s；保存时未测侧会打网；失败仍落盘但留页；绑定中的自定义商禁删  
+- M1：旧单配置迁到内置或新建自定义并双绑；旧服务商无 `voiceModel` 时智谱补 `glm-4-voice`  
+- **语音识别引擎（ADR-052）：** 默认系统 ASR（不可用置灰）；可选 Vosk 中文小包 / Whisper base（ModelScope 下载，不进安装包）/ AI 语音模型
 
 **流水线：**
 
 ```
-文本或图片
-  → resolve(文本|视觉)
+文本或图片或语音音频
+  → resolve(文本|视觉|语音)
   → PromptBuilder（目录、scope、CURRENT_TIME 到秒、实付、备注规则）
   → OpenAiCompatibleClient
   → BillInfo[] → 确认 UI 或后台直存
   → BillCreationService（分类/智能选标）→ 落库
 ```
 
-文本还用于：ASR 后结构化、CSV AI 映射。视觉用于：截图/分享/拍照/相册。
+文本还用于：听写后结构化、CSV AI 映射。视觉用于：截图/分享/拍照/相册。语音能力用于：AI 语音模型**直接记账**（ADR-052）。
 
 ### 关键规则
 
@@ -292,7 +293,7 @@ ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040 / 051（及明细同步钮 ADR
 - **账单时间：** 资金变动时刻（支付 > 订单类标签）；禁止自取/配送/预约等履约时间；仅有履约时间则用 `CURRENT_TIME`  
 - **提取备注：** ≤15 字；店名/商品优先；支付方式走标签  
 - **分类消歧（ADR-047）：** Prompt 按主类分组；可回写值为主类裸名与「主类-子类」；先主类再子类，都不贴用主类；匹配优先复合名再裸名；确认/明细展示仍用裸名  
-- 空 Key / 未就绪：中文提示 +「去设置」，不静默打网  
+- 空 Key / 未就绪：中文提示 +「去设置」，不静默打网；**前台确认弹层**（语音/图片）只用弹层内引导，不叠 SnackBar（ADR-057） 
 
 ### 代码
 
@@ -313,15 +314,19 @@ ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040 / 051（及明细同步钮 ADR
 |---|---|---|
 | 手动 | FAB 单击 | 无 AI |
 | 拍照 / 图片 / 备注旁相机 | 扇形或相机 | Vision → **识别确认弹层** |
-| 语音 | 扇形 | ASR → 文本结构化 → **单卡** |
+| 语音 | 扇形 | 按引擎：听写→文本结构化 **或** AI 直接记账 → **单卡**（ADR-052） |
 | 截图自动 | 「我的」开关（默认关） | 通知 → Vision → **自动落库** |
 | 分享入账 | 系统分享 | 始终可收（不受截图开关）→ 同上 |
 
-**分享入账（Android）：** `ShareRelayActivity`（透明）接 `ACTION_SEND` → 拷图 → 以 `SINGLE_TOP|CLEAR_TOP|NEW_TASK` 打进 `MainActivity`。**热启动**不得出现启动页；冷启动仍走主界面 LaunchTheme。收到分享后尽快 `moveTaskToBack` 回到来源 App；直存批次进行中返回键同样送后台（不 `finish`），避免拆掉 Flutter 引擎导致识别静默中断。
+**分享入账（Android）：** `ShareRelayActivity`（透明）接 `ACTION_SEND` / **`ACTION_SEND_MULTIPLE`**（ADR-058）→ 拷图（上限 9，超出截取前 9）→ 以 `SINGLE_TOP|CLEAR_TOP|NEW_TASK` 打进 `MainActivity`。**热启动**不得出现启动页；冷启动仍走主界面 LaunchTheme。收到分享后尽快 `moveTaskToBack` 回到来源 App；直存批次进行中返回键同样送后台（不 `finish`），避免拆掉 Flutter 引擎导致识别静默中断。多选截取时进度/结果通知注明「已截取前 9 张」。
 
-**识别确认弹层：** 复选默认全选；确认(N)；关即丢弃；串行落库可部分成功重试；行内只读；圆标按名匹配，未命中「未分类」（勿用落库兜底类）。
+**前台多图（ADR-058）：** 扇形「图片」/备注旁相册用系统多选（`pickMultiImage`），上限 9、超出截取并 Toast；**不做** App 内选图闸门。全部串行 Vision 后再出确认层；loading 可取消（丢弃 inflight，已完成组仍进确认层）。确认层**按图分组**（组头小缩略图可点全屏静态原图）；失败/空结果组可重试。拍照仍单张。iOS 同步前台多选；多选分享仅 Android。
 
-**后台：** `AutoBillingService` 串行；通知点击成功→明细、失败→明细+框（未点不弹）；无通知权限仍可直存。未就绪：后台失败通知引导设置；前台 Toast+去设置。直存批次开始时开启返回保活，批次结束关闭。
+**识别确认弹层：** 复选默认全选；确认(N)；关即丢弃；串行落库可部分成功重试；行内只读；圆标按名匹配，未命中「未分类」（勿用落库兜底类）。**Vision 回退（ADR-055）：** 每已测通服务商仅调 1 次，失败立即切下一候选；loading 展示失败原因与「正在切换至 XX（模型）重试…」。
+
+**后台：** `AutoBillingService` 串行；结果通知按 **账单笔数** 分桶（成功/跳过/失败，ADR-056），整图无候选另述「N 张未入账」；点击：成功笔>0→明细，否则→明细+框（未点不弹）；无通知权限仍可直存。未就绪：后台失败通知引导设置；前台 Toast+去设置。直存批次开始时开启返回保活，批次结束关闭。
+
+**后台直存前台服务（ADR-054）：** Android 截图/分享 Vision 批次持有 `AutoBillingForegroundService`（`dataSync`），保证 App 在 `paused` 或冷启动分享后立即 `moveTaskToBack` 时 Dart 与网络仍可执行；进度通知与 `piggy_auto_billing` 渠道同 id（1001）。分享入账须在 `moveTaskToBack` **之前**拉起 FGS。传输失败且当时 App 不在前台：入本机待重试队列，通知「打开 App 后将自动重试」；`resumed` 时 `retryPendingOnResume` 串行重跑（不入失败结果档）。
 
 **截图稳定期 + 替换关联窗（ADR-045 / ADR-048）：** 稳定期默认 **3s**（自该路径最近变更；同路径再 `onChange` / `IS_PENDING` / size 变 → 重置）。另有 **15s** 替换关联窗（自首次检测），处理「编辑另存新文件名 + 删原图」。稳定期满且窗内尚无第二张可发早期进度，但 **Vision/落库须过入账门闩**（关联窗满或替换/连拍判定结束）。窗内原仍在又来新图 → 短观察 **2s**（旧消失=替换，仍在=连拍）。替换后新文件只再走 3s 稳定期。删除且无后继 → 取消。稳定期/门闩前不入已处理集。连拍各路径独立；Vision 仍串行。分享入账、前台选图不走上述窗口。
 
@@ -330,12 +335,12 @@ Android：`ScreenshotObserver`（MediaStore + 稳定期 + 替换关联）。iOS�
 ### 关键规则
 
 - 「我的」不放选图入口  
-- 后台日志：触发→识别→落库；前台 Vision 本轮不要求同等完整链路  
+- 后台日志：触发→识别→落库；前台 Vision 记录调用与切换（ADR-053 / ADR-055）  
 - 报表对话助手已下线（ADR-049）；历史 `source=ai_chat` 保留不迁移  
 
 ### 代码
 
-`auto_billing_service.dart` · `billing_notification_service.dart` · `image_share_handler.dart` · `screenshot_monitor_service.dart` · `android_activity_bridge.dart` · Native `ShareRelayActivity.kt` · `SharedImageIngress.kt` · `ScreenshotObserver.kt` · `MainActivity` activity channel · `speech_asr_service.dart` · `bill_select_tile.dart`
+`auto_billing_service.dart` · `billing_notification_service.dart` · `pending_billing_retry_store.dart` · `foreground_billing_bridge.dart` · `image_share_handler.dart` · `screenshot_monitor_service.dart` · `android_activity_bridge.dart` · Native `AutoBillingForegroundService.kt` · `ShareRelayActivity.kt` · `SharedImageIngress.kt` · `ScreenshotObserver.kt` · `MainActivity` activity channel · `speech_asr_service.dart` · `speech_engine_preference.dart` · `offline_asr_model_store.dart` · `voice_recognition_session.dart` · `voice_audio_recorder.dart` · `bill_select_tile.dart`
 
 ---
 
@@ -455,7 +460,7 @@ Android：`ScreenshotObserver`（MediaStore + 稳定期 + 替换关联）。iOS�
 
 关于页入口（与使用教程同级）。关键节点 + 未捕获异常；48h + ≤2000 条。
 
-**节点域：** 启动失败；AI/测连失败与未就绪；云同步；CSV；截图/分享/拍照选图失败；**截图稳定期/关联窗关键节点**（tag `Screenshot`：开始等待 / 变动重置 / 删除取消 / 短观察 / 替换 / 进度 / 门闩入账）。普通记账成功不打点。禁写 Key/Secret/整份 CSV。
+**节点域：** 启动失败；AI/测连失败与未就绪；**AI 每次生产请求（tag `AI`：调用 provider+model；Vision 回退时 3s 后重试 / 切换服务商，ADR-053）**；云同步；CSV；截图/分享/拍照选图失败；**截图稳定期/关联窗关键节点**（tag `Screenshot`：开始等待 / 变动重置 / 删除取消 / 短观察 / 替换 / 进度 / 门闩入账）。普通记账成功不打点。禁写 Key/Secret/整份 CSV。
 
 导出：Android `Download/PiggyCount/`；iOS 分享。教程本轮不介绍日志。教程在关于页内可展开章节。
 
@@ -561,3 +566,10 @@ flutter build apk --release --split-per-abi
 | 049 | 下线 AI 智能助手 | 报表球/对话/开关移除；扇形与后台直存保留 |
 | 050 | 待核对账单 | 高亮仅前台；信封持久+红点+一键已读；screenshot/share；syncId；仅明细 |
 | 051 | 记一笔时间选择 | 弃用系统表盘；Dialog 双输入 + 0–23 / 每 5 分快捷格 |
+| 052 | 多引擎语音识别 | 废止「无大模型 ASR」；系统 / Vosk / Whisper / AI 直接记账；离线包 ModelScope 下载；确认门闩不变 |
+| 053 | AI 请求与重试日志 | 每次生产调用 INFO（provider+model）；Vision 回退 3s 重试 / 切换；测连不打点 |
+| 055 | 前台 Vision 服务商切换 | 每模型 1 次、失败即切；弹层展示失败原因与切换提示 |
+| 054 | 后台直存前台服务 | FGS `dataSync`；分享先 FGS 再退后台；传输失败后台入队、resumed 重试 |
+| 056 | 直存结果按账单笔数 | 成功/跳过/失败按候选分桶；整图未入账用「张」；点击看成功笔数 |
+| 057 | 前台弹层未就绪引导 | 语音/图片确认弹层只弹层内「去设置」；不叠 SnackBar；后台通知仍独立 |
+| 058 | 多图选图与多选分享 | 系统多选（无 App 闸门）；确认按图分组；上限 9 截取；Android `SEND_MULTIPLE` 同后台直存 |

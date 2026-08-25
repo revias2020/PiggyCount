@@ -5,12 +5,15 @@ import '../../ai/ai_provider_config.dart';
 import '../../ai/bill_info.dart';
 import '../../providers/ai_providers.dart';
 import '../../providers/ledger_session_provider.dart';
+import '../../services/ai/speech_engine_preference.dart';
+import '../../services/ai/voice_recognition_session.dart';
 import '../../services/system/logger_service.dart';
 import '../../styles/tokens.dart';
 import '../../widgets/ai/ai_setup_helpers.dart';
 import '../../widgets/ai/bill_confirm_card.dart';
+import '../ai/ai_settings_page.dart';
 
-/// 语音记账确认流：系统 ASR → AI 结构化 → 用户确认落库。
+/// 语音记账确认流：多引擎听写/直接记账 → 用户确认落库（ADR-052）。
 Future<void> showVoiceBillingSheet(BuildContext context) {
   return showModalBottomSheet<void>(
     context: context,
@@ -36,70 +39,183 @@ class _VoiceBillingSheetState extends ConsumerState<_VoiceBillingSheet> {
   bool _extracting = false;
   List<BillInfo> _bills = const [];
   String? _error;
+  SpeechRecognitionEngineKind? _engine;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _startListen());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _bootstrap());
   }
 
   @override
   void dispose() {
-    // 尽量停掉识别，避免离开后仍占麦；失败忽略。
     try {
-      ref.read(speechAsrServiceProvider).cancel();
+      ref.read(voiceRecognitionSessionProvider).cancel();
     } catch (_) {}
     super.dispose();
   }
 
-  Future<void> _startListen() async {
-    try {
-      await ref
-          .read(aiProviderStoreProvider)
-          .resolve(AiCapabilityKind.text);
-    } on AiCapabilityNotReadyException catch (e) {
-      logger.warning('VoiceBilling', '能力未就绪: ${e.message}');
-      setState(() => _error = e.message);
-      if (mounted) showAiSetupSnackBar(context, e.message);
-      return;
+  Future<void> _bootstrap() async {
+    final session = ref.read(voiceRecognitionSessionProvider);
+    final prefStore = ref.read(speechEnginePreferenceStoreProvider);
+    var engine = await prefStore.load();
+    final systemOk = await session.isSystemAvailable();
+
+    if (engine == SpeechRecognitionEngineKind.system && !systemOk) {
+      if (!mounted) return;
+      setState(() {
+        _error = '本机系统语音识别不可用，请改用离线模型或 AI 语音模型';
+      });
+      final switched = await _promptPickEngine(systemOk: systemOk);
+      if (switched == null) return;
+      await prefStore.save(switched);
+      ref.invalidate(speechEngineKindProvider);
+      engine = switched;
     }
+
+    _engine = engine;
+    await _startListen();
+  }
+
+  Future<SpeechRecognitionEngineKind?> _promptPickEngine({
+    required bool systemOk,
+  }) async {
+    final offline = ref.read(offlineAsrModelStoreProvider);
+    final readiness = SpeechEngineReadiness(
+      offlineStore: offline,
+      aiStore: ref.read(aiProviderStoreProvider),
+    );
+    final options = <SpeechRecognitionEngineKind>[];
+    for (final k in SpeechRecognitionEngineKind.values) {
+      if (await readiness.isSelectable(k, systemAvailable: systemOk)) {
+        options.add(k);
+      }
+    }
+    if (!mounted) return null;
+    if (options.isEmpty) {
+      setState(() {
+        _error = '暂无可用的语音识别引擎，请到 AI 设置下载离线模型或配置语音能力';
+      });
+      return null;
+    }
+    return showModalBottomSheet<SpeechRecognitionEngineKind>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text(
+                '选择语音识别引擎',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+              ),
+            ),
+            for (final k in options)
+              ListTile(
+                title: Text(k.label),
+                onTap: () => Navigator.pop(ctx, k),
+              ),
+            ListTile(
+              title: const Text('去 AI 设置'),
+              leading: const Icon(Icons.settings_outlined),
+              onTap: () async {
+                Navigator.pop(ctx);
+                await Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const AiSettingsPage(),
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _startListen() async {
+    final engine = _engine;
+    if (engine == null) return;
+
+    if (engine == SpeechRecognitionEngineKind.aiVoice) {
+      try {
+        await ref.read(aiProviderStoreProvider).resolve(AiCapabilityKind.voice);
+      } on AiCapabilityNotReadyException catch (e) {
+        setState(() => _error = e.message);
+        return;
+      }
+    } else if (engine.isDictation) {
+      try {
+        await ref.read(aiProviderStoreProvider).resolve(AiCapabilityKind.text);
+      } on AiCapabilityNotReadyException catch (e) {
+        setState(() => _error = e.message);
+        return;
+      }
+    }
+
     try {
       setState(() {
         _listening = true;
         _error = null;
+        _bills = const [];
+        _transcript = '';
       });
-      await ref.read(speechAsrServiceProvider).start(
+      await ref.read(voiceRecognitionSessionProvider).start(
+            engine: engine,
             onPartial: (t) {
               if (!mounted) return;
               setState(() => _transcript = t);
             },
           );
     } catch (e, st) {
-      logger.error('VoiceBilling', 'ASR 启动失败', e, st);
+      logger.error('VoiceBilling', '启动失败', e, st);
       setState(() {
         _listening = false;
-        _error = '$e';
+        _error = VoiceRecognitionSession.friendlyError(e);
       });
     }
   }
 
   Future<void> _stopAndExtract() async {
-    final text = (await ref.read(speechAsrServiceProvider).stop()).trim();
     setState(() {
       _listening = false;
-      _transcript = text.isEmpty ? _transcript : text;
       _extracting = true;
     });
-    if (_transcript.trim().isEmpty) {
-      setState(() {
-        _extracting = false;
-        _error = '没有听清内容，请重试';
-      });
-      return;
-    }
     try {
-      final bills =
-          await ref.read(aiBookkeeperProvider).fromText(_transcript.trim());
+      final outcome = await ref.read(voiceRecognitionSessionProvider).stop();
+      if (outcome.isDirectBilling) {
+        final bytes = outcome.audioBytes;
+        if (bytes == null || bytes.isEmpty) {
+          setState(() {
+            _extracting = false;
+            _error = '没有录到声音，请重试';
+          });
+          return;
+        }
+        final bills =
+            await ref.read(aiBookkeeperProvider).fromVoice(bytes);
+        setState(() {
+          _extracting = false;
+          _bills = bills;
+          if (bills.isEmpty) {
+            _error = '未能识别为账单，请再说一次金额与用途';
+          }
+        });
+        return;
+      }
+
+      final text = (outcome.transcript ?? _transcript).trim();
+      setState(() => _transcript = text);
+      if (text.isEmpty || text == '正在聆听…') {
+        setState(() {
+          _extracting = false;
+          _error = '没有听清内容，请重试';
+        });
+        return;
+      }
+      final bills = await ref.read(aiBookkeeperProvider).fromText(text);
       setState(() {
         _extracting = false;
         _bills = bills;
@@ -108,10 +224,10 @@ class _VoiceBillingSheetState extends ConsumerState<_VoiceBillingSheet> {
         }
       });
     } catch (e, st) {
-      logger.error('VoiceBilling', '文本结构化失败', e, st);
+      logger.error('VoiceBilling', '识别失败', e, st);
       setState(() {
         _extracting = false;
-        _error = '识别失败：$e';
+        _error = VoiceRecognitionSession.friendlyError(e);
       });
     }
   }
@@ -119,12 +235,19 @@ class _VoiceBillingSheetState extends ConsumerState<_VoiceBillingSheet> {
   Future<void> _confirm(BillInfo bill) async {
     final ledgerId = ref.read(currentLedgerIdProvider);
     if (ledgerId == null) return;
-    await ref.read(aiBookkeeperProvider).saveBills(
+    final result = await ref.read(aiBookkeeperProvider).saveBills(
           bills: [bill],
           ledgerId: ledgerId,
           source: 'voice',
         );
     if (!mounted) return;
+    if (result.ids.isEmpty) {
+      final msg = result.skipped > 0
+          ? '已存在相同账本、金额与时间的账单'
+          : '保存失败';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      return;
+    }
     Navigator.of(context).pop();
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('语音记账已保存')),
@@ -134,6 +257,7 @@ class _VoiceBillingSheetState extends ConsumerState<_VoiceBillingSheet> {
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.viewInsetsOf(context).bottom;
+    final engineLabel = _engine?.label;
     return Padding(
       padding: EdgeInsets.fromLTRB(16, 12, 16, 16 + bottom),
       child: Column(
@@ -155,11 +279,18 @@ class _VoiceBillingSheetState extends ConsumerState<_VoiceBillingSheet> {
             '语音记账',
             style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
           ),
+          if (engineLabel != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              '引擎：$engineLabel',
+              style: const TextStyle(fontSize: 12, color: PigTokens.textTertiary),
+            ),
+          ],
           const SizedBox(height: 8),
           Text(
             _listening
                 ? '正在聆听，说完后点「识别」'
-                : (_extracting ? '正在结构化…' : '识别结果确认后才会入账'),
+                : (_extracting ? '正在识别…' : '识别结果确认后才会入账'),
             style: const TextStyle(color: PigTokens.textSecondary),
           ),
           const SizedBox(height: 12),

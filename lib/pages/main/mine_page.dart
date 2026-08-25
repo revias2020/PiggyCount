@@ -311,7 +311,6 @@ class _MineTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return ListTile(
       enabled: enabled,
-      dense: true,
       minVerticalPadding: 0,
       contentPadding: const EdgeInsets.symmetric(
         horizontal: PigTokens.spaceLg,
@@ -320,6 +319,7 @@ class _MineTile extends StatelessWidget {
       title: Text(
         title,
         style: const TextStyle(
+          fontSize: 16,
           fontWeight: FontWeight.w600,
           height: 1.15,
         ),

@@ -28,6 +28,9 @@ class BillingNotificationService {
   /// 最近一次失败通知正文；点失败通知时弹 Dialog 用。
   String? lastFailureBody;
 
+  /// 最近一次失败通知标题；点失败通知时 Dialog 标题优先用此。
+  String? lastFailureTitle;
+
   /// 最近一次成功直存的账单 syncId（点成功通知滚到该笔）。
   String? lastSuccessSyncId;
 
@@ -128,6 +131,7 @@ class BillingNotificationService {
       await _plugin.cancel(id: progressId);
       if (!success) {
         lastFailureBody = body;
+        lastFailureTitle = title;
       }
       await _plugin.show(
         id: resultId,

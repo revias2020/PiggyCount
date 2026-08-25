@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:piggy_count/ai/ai_provider_config.dart';
 import 'package:piggy_count/ai/ai_provider_store.dart';
 import 'package:piggy_count/ai/ai_vision_failure.dart';
+import 'package:piggy_count/ai/ai_vision_failure.dart';
 import 'package:piggy_count/ai/extraction_context.dart';
 import 'package:piggy_count/ai/extraction_engine.dart';
 import 'package:piggy_count/ai/openai_compatible_client.dart';
@@ -49,6 +50,7 @@ AiServiceProvider _provider(String id) => AiServiceProvider(
       baseUrl: 'https://example.com/v1',
       textModel: 't',
       visionModel: 'v',
+      voiceModel: '',
       createdAt: DateTime(2024),
       visionTestStatus: AiModelTestStatus.success,
     );
@@ -114,5 +116,27 @@ void main() {
       context: _ctx,
     );
     expect(bills.single.amount, 8);
+  });
+
+  test('前台路径每服务商仅 1 次，失败立即切换', () async {
+    final switches = <AiVisionSwitchEvent>[];
+    final engine = AiExtractionEngine(
+      providerStore: _FakeVisionStore([_provider('a'), _provider('b')]),
+      client: _FakeVisionClient([
+        () => throw AiTransportException('abort'),
+        () async =>
+            '[{"amount":5,"type":"expense","time":"2026-08-20T00:00:00"}]',
+      ]),
+    );
+
+    final bills = await engine.extractFromImage(
+      imageBytes: Uint8List.fromList([1]),
+      context: _ctx,
+      onSwitch: switches.add,
+    );
+    expect(bills.single.amount, 5);
+    expect(switches.length, 1);
+    expect(switches.single.nextProviderName, 'b');
+    expect(switches.single.failureMessage, 'abort');
   });
 }

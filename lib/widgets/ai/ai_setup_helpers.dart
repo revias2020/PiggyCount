@@ -16,20 +16,10 @@ bool looksLikeAiSetupError(String message) {
       message.contains('服务商');
 }
 
-/// E1：能力未就绪时 SnackBar +「去设置」。
-void showAiSetupSnackBar(BuildContext context, String message) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      content: Text(message),
-      action: SnackBarAction(
-        label: '去设置',
-        onPressed: () => openAiSettings(context),
-      ),
-    ),
-  );
-}
-
 /// 错误文案旁的「去设置」按钮；非配置类错误返回 null。
+///
+/// 前台确认弹层（语音/图片）能力未就绪时只用弹层内引导（ADR-057），
+/// 不再叠 SnackBar，避免跳到 AI 设置后重复通知。
 Widget? aiSetupTextButton(BuildContext context, String? error) {
   if (error == null || !looksLikeAiSetupError(error)) return null;
   return TextButton(

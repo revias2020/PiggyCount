@@ -38,6 +38,24 @@ class AiVisionExhaustedException implements Exception {
   String toString() => notificationBody();
 }
 
+/// 前台 Vision 识别失败、即将切换下一服务商时通知 UI（ADR-055）。
+class AiVisionSwitchEvent {
+  const AiVisionSwitchEvent({
+    required this.failureMessage,
+    required this.nextProviderName,
+    required this.nextModel,
+  });
+
+  final String failureMessage;
+  final String nextProviderName;
+  final String nextModel;
+
+  String get userHint =>
+      '$failureMessage\n正在切换至 $nextProviderName（$nextModel）重试…';
+}
+
+typedef AiVisionSwitchCallback = void Function(AiVisionSwitchEvent event);
+
 /// 是否属于传输层失败（可 3s 后重试同服务商）。
 bool isAiTransportFailure(Object error) {
   if (error is AiTestCancelledException) return false;
