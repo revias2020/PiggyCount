@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B?logo=flutter)](https://flutter.dev)
 [![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20iOS-lightgrey)](#)
-[![Version](https://img.shields.io/badge/version-0.4.1-green)](pubspec.yaml)
+[![Version](https://img.shields.io/badge/version-0.4.2-green)](pubspec.yaml)
 
 **免费 · 开源 · 本机优先** 的个人记账应用。
 
@@ -24,7 +24,7 @@
 | 隐私 | 可能追踪 / 分析 | **无广告、无追踪、无强制登录** |
 | 记账方式 | 多为手动 | 手动 + **智能记账**（图片 / 语音 / 截图自动化，须配置 AI） |
 
-> 平台：Android · iOS（**0.4.1 真机测试以 Android 为主**；桌面小组件目前仅 Android）  
+> 平台：Android · iOS（**0.4.2 真机测试以 Android 为主**；桌面小组件目前仅 Android）  
 > 界面语言：简体中文（当前仅亮色模式）
 
 ---

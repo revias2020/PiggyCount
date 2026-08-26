@@ -33,21 +33,33 @@ class WidgetSpec {
     imageKey: 'widget_glance_small',
   );
 
-  /// 中号默认占位；真机按槽位 prefs 覆盖（ADR-023）。
+  /// 中号：固定渲图画布 364×182（对齐 BeeCount Android 2:1；不可拉伸）。
   static const glanceMedium = WidgetSpec._(
     type: HWType.glance,
     size: HWSize.medium,
-    logicalSize: Size(360, 152),
+    logicalSize: Size(364, 182),
     androidClassName: 'com.xiaozhu.piggy_count.GlanceMediumWidgetProvider',
     imageKey: 'widget_glance_medium',
   );
 
+  /// 中号浮卡内容高度；画布内上下透明边各 (182−162)/2 = 10。
+  static const glanceMediumContentHeight = 162.0;
+
+  /// 浮卡内边距（含柱图区到底边 = 14）。
+  static const glanceMediumPad = 14.0;
+
+  /// 今日区行高（标签 ~16 + 间距 6 + 金额 22×1.05 ≈ 46）。
+  static const glanceMediumTodayRowHeight = 46.0;
+
+  /// 今日区与柱图区间距。
+  static const glanceMediumTodayChartGap = 12.0;
+
+  /// 柱图区定高：162 − 14 − 46 − 12 − 14 = 76。
+  static const glanceMediumChartHeight = 76.0;
+
   static const catalog = <WidgetSpec>[glanceSmall, glanceMedium];
 
   static const defaultSet = <WidgetSpec>[glanceMedium];
-
-  static const mediumWidthKey = 'glance_medium_width_dp';
-  static const mediumHeightKey = 'glance_medium_height_dp';
 
   /// 匹配已安装小组件；短类名与全限定名都认。
   static WidgetSpec? matchInstalled(HomeWidgetInfo info) {

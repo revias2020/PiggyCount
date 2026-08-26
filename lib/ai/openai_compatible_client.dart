@@ -84,6 +84,8 @@ class OpenAiCompatibleClient {
   }
 
   /// 语音直接记账：将音频以 input_audio 传入（OpenAI / 智谱兼容形态）。
+  ///
+  /// content 顺序对齐 BeeCount / 智谱文档习惯：音频在前、文本在后。
   Future<String> voice({
     required AiServiceProvider provider,
     required Uint8List audioBytes,
@@ -99,7 +101,6 @@ class OpenAiCompatibleClient {
       {
         'role': 'user',
         'content': [
-          {'type': 'text', 'text': prompt},
           {
             'type': 'input_audio',
             'input_audio': {
@@ -107,6 +108,7 @@ class OpenAiCompatibleClient {
               'format': format,
             },
           },
+          {'type': 'text', 'text': prompt},
         ],
       },
     ];
@@ -183,7 +185,10 @@ class OpenAiCompatibleClient {
     });
   }
 
-  /// 测试语音模型（timeout 15s）：短静音 wav + 文本提示。
+  /// 测试语音模型（timeout 15s）：1s 静音 wav + 文本提示。
+  ///
+  /// 对齐 BeeCount：合法 16-bit PCM 采样；静音无字也算测通成功
+  ///（智谱对空 data 会报 1210「No audio tokens extracted」）。
   Future<void> testVoice(AiServiceProvider provider) async {
     await _runTest((client, gen) async {
       if (!provider.isValid) {
@@ -192,14 +197,13 @@ class OpenAiCompatibleClient {
       if (!provider.supportsVoice) {
         throw AiClientException('请先填写语音模型');
       }
-      final reply = await _postChat(
+      await _postChat(
         provider: provider,
         model: provider.voiceModel,
         messages: [
           {
             'role': 'user',
             'content': [
-              {'type': 'text', 'text': 'hi'},
               {
                 'type': 'input_audio',
                 'input_audio': {
@@ -207,17 +211,16 @@ class OpenAiCompatibleClient {
                   'format': 'wav',
                 },
               },
+              {'type': 'text', 'text': 'hi'},
             ],
           },
         ],
         temperature: 0.2,
         timeout: testTimeout,
         httpClient: client,
+        allowEmptyContent: true, // 静音可能无字；HTTP 200 即测通
       );
       _ensureNotCancelled(gen);
-      if (reply.trim().isEmpty) {
-        throw AiClientException('语音模型返回空响应');
-      }
     });
   }
 
@@ -268,15 +271,49 @@ class OpenAiCompatibleClient {
     'AooooAKKKKACiiigAooooAKKKKACiiigAooooA//2Q==',
   );
 
-  /// 极短静音 WAV（测连用；部分厂商仅校验音频字段存在）。
-  static final Uint8List _testWavBytes = Uint8List.fromList([
-    0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, // RIFF...
-    0x57, 0x41, 0x56, 0x45, 0x66, 0x6D, 0x74, 0x20, // WAVEfmt
-    0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, // PCM mono
-    0x40, 0x1F, 0x00, 0x00, 0x40, 0x1F, 0x00, 0x00, // 8000 Hz
-    0x01, 0x00, 0x08, 0x00, 0x64, 0x61, 0x74, 0x61, // data
-    0x00, 0x00, 0x00, 0x00,
-  ]);
+  /// 1 秒静音 WAV（测连用；对齐 BeeCount）。
+  ///
+  /// 16-bit PCM / mono / 8kHz。空 data 或 8-bit 会被智谱 glm-4-voice
+  /// 以 1210「No audio tokens extracted」拒绝。懒加载，避免类加载时建缓冲。
+  static Uint8List? _testWavCache;
+  static Uint8List get _testWavBytes => _testWavCache ??= _createMinimalWav();
+
+  /// 简单的 16-bit PCM WAV：44 字节头 + 1 秒 8kHz 静音。
+  static Uint8List _createMinimalWav() {
+    const sampleRate = 8000;
+    const numSamples = sampleRate; // 1 秒
+    const dataSize = numSamples * 2; // 16-bit
+    const fileSize = 36 + dataSize;
+    final bytes = Uint8List(44 + dataSize);
+    var o = 0;
+    void writeAscii(String s) {
+      for (var i = 0; i < s.length; i++) {
+        bytes[o++] = s.codeUnitAt(i);
+      }
+    }
+
+    void writeInt(int value, int length) {
+      for (var i = 0; i < length; i++) {
+        bytes[o++] = (value >> (i * 8)) & 0xFF;
+      }
+    }
+
+    writeAscii('RIFF');
+    writeInt(fileSize, 4);
+    writeAscii('WAVE');
+    writeAscii('fmt ');
+    writeInt(16, 4);
+    writeInt(1, 2); // PCM
+    writeInt(1, 2); // mono
+    writeInt(sampleRate, 4);
+    writeInt(sampleRate * 2, 4);
+    writeInt(2, 2);
+    writeInt(16, 2);
+    writeAscii('data');
+    writeInt(dataSize, 4);
+    // 其余已是 0（静音）
+    return bytes;
+  }
 
   Future<String> _postChat({
     required AiServiceProvider provider,
@@ -285,6 +322,7 @@ class OpenAiCompatibleClient {
     required double temperature,
     required Duration timeout,
     http.Client? httpClient,
+    bool allowEmptyContent = false,
   }) async {
     if (!provider.isValid) {
       throw AiClientException('未配置 API Key，请先到「我的 → AI 设置」填写');
@@ -360,7 +398,11 @@ class OpenAiCompatibleClient {
     }
     final message = choices.first['message'] as Map<String, dynamic>?;
     final content = message?['content'];
-    if (content is String && content.trim().isNotEmpty) return content;
+    if (content is String) {
+      final text = content.trim();
+      if (text.isNotEmpty) return text;
+      if (allowEmptyContent) return '';
+    }
     if (content is List) {
       final buf = StringBuffer();
       for (final part in content) {
@@ -370,6 +412,10 @@ class OpenAiCompatibleClient {
       }
       final text = buf.toString().trim();
       if (text.isNotEmpty) return text;
+      if (allowEmptyContent) return '';
+    }
+    if (allowEmptyContent && (content == null || content == '')) {
+      return '';
     }
     throw AiClientException('AI 响应内容为空');
   }

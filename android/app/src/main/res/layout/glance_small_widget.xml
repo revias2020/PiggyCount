@@ -12,15 +12,36 @@
         android:scaleType="fitCenter"
         android:contentDescription="@string/widget_glance_small_name" />
 
-    <!-- 整卡记支出；眼睛热区 44dp 叠在右上（ADR-034）。 -->
+    <!-- 整卡记支出；今日支出大数字带叠隐私（ADR-061）。 -->
     <FrameLayout
         android:id="@+id/widget_click"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <FrameLayout
-        android:id="@+id/click_privacy"
-        android:layout_width="44dp"
-        android:layout_height="44dp"
-        android:layout_gravity="top|end" />
+    <!--
+      金额热区约居中偏上：顶（标题+上空白）/ 金额 / 底（下空白+本月）。
+      无 PendingIntent 的层不拦截，点到下方仍走 widget_click。
+    -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:baselineAligned="false">
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="35" />
+
+        <FrameLayout
+            android:id="@+id/click_amount"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="20" />
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="45" />
+    </LinearLayout>
 </FrameLayout>

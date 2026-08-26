@@ -128,11 +128,11 @@ void main() {
         todayExpense: '¥200.00',
         todayIncome: '¥0.00',
         themeColor: PigTokens.primary,
-        width: 360,
-        height: 152,
+        width: 364,
+        height: 182,
         last7Days: _demoDays(),
       ),
-      const Size(360, 152),
+      const Size(364, 182),
       'widget_preview_glance',
     );
 

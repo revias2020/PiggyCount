@@ -19,6 +19,7 @@ import '../../widgets/workspace_sheet.dart';
 import 'amount_keypad.dart';
 import 'image_billing_sheet.dart';
 import 'record_time_picker_dialog.dart';
+import 'voice_billing_sheet.dart';
 
 /// 打开记一笔 / 编辑账单底部弹层。
 ///
@@ -50,7 +51,7 @@ Future<void> showRecordEditorSheet(
   );
 }
 
-/// 记一笔表单（对照 fig3；新建时备注旁有相机入口，ADR-016）。
+/// 记一笔表单（对照 fig3；新建时备注旁有语音 / 相机入口）。
 class RecordEditorSheet extends ConsumerStatefulWidget {
   const RecordEditorSheet({
     super.key,
@@ -264,6 +265,17 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
     );
+  }
+
+  /// 备注旁语音：关本弹层丢草稿，再走与扇形相同的语音记账确认流。
+  Future<void> _onNoteVoice() async {
+    final navigator = Navigator.of(context);
+    navigator.pop(); // 关闭记一笔，丢弃未保存草稿
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    if (!navigator.mounted) return;
+    final host = navigator.context;
+    if (!host.mounted) return;
+    await showVoiceBillingSheet(host);
   }
 
   /// 备注旁相机：先选拍照/相册，关本弹层丢草稿，再走 Vision（ADR-016）。
@@ -619,6 +631,21 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
                           if (!_isEdit) ...[
                             const SizedBox(width: PigTokens.spaceSm),
                             IconButton(
+                              onPressed: _loading ? null : _onNoteVoice,
+                              tooltip: '语音记账',
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                minWidth: 40,
+                                minHeight: 40,
+                              ),
+                              icon: const Icon(
+                                Icons.mic_none_outlined,
+                                color: PigTokens.textTertiary,
+                                size: 26,
+                              ),
+                            ),
+                            IconButton(
                               onPressed: _loading ? null : _onNoteCamera,
                               tooltip: '图片记账',
                               visualDensity: VisualDensity.compact,
@@ -919,7 +946,7 @@ class _TagEntryRow extends StatelessWidget {
   }
 }
 
-/// 记一笔选标弹层：按组展示 chip，点选即时生效。
+/// 记一笔选标弹层：按组展示 chip，点选即时生效；标题行「确认」仅关层。
 class _TagPickerSheet extends StatelessWidget {
   const _TagPickerSheet({
     required this.bundles,
@@ -951,23 +978,30 @@ class _TagPickerSheet extends StatelessWidget {
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
                 PigTokens.spaceLg,
                 PigTokens.spaceMd,
-                PigTokens.spaceLg,
+                PigTokens.spaceSm,
                 PigTokens.spaceSm,
               ),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  '选择标签',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
-                    color: PigTokens.textPrimary,
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      '选择标签',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: PigTokens.textPrimary,
+                      ),
+                    ),
                   ),
-                ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('确认'),
+                  ),
+                ],
               ),
             ),
             Expanded(

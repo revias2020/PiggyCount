@@ -56,8 +56,8 @@ class WidgetManagementPage extends StatelessWidget {
                     todayExpense: '¥200.00',
                     todayIncome: '¥0.00',
                     themeColor: PigTokens.primary,
-                    width: 360,
-                    height: 152,
+                    width: 364,
+                    height: 182,
                     last7Days: _demoDays,
                   ),
                 ),
@@ -98,10 +98,12 @@ class WidgetManagementPage extends StatelessWidget {
             '选择「收支速览 · 小」或「收支速览 · 中」放到桌面。',
           ),
           const _Bullet(
-            '中号：点今日支出/收入进明细；点「+」记支出；点柱图打开报表自定义近 7 天；点眼睛隐藏金额。',
+            '中号：点今日支出/收入金额可隐藏或显示数字；点「+」记支出；'
+            '点柱图打开报表近 7 天；点标签等其它区域进明细。',
           ),
           const _Bullet(
-            '小号：点卡片记支出；点右侧眼睛隐藏金额（与中号开关相互独立）。',
+            '小号：点今日支出金额可隐藏或显示数字；点其它区域记支出'
+            '（与中号隐藏开关相互独立）。',
           ),
           const _Bullet(
             '数字约每 30 分钟由系统刷新；记账保存、回到 App，或添加小组件时'

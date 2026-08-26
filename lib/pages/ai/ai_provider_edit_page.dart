@@ -385,13 +385,31 @@ class _AiProviderEditPageState extends ConsumerState<AiProviderEditPage> {
           if (visionFailed) '视觉模型',
           if (voiceFailed) '语音模型',
         ];
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
+        // 已落盘；弹窗只决定去留（CONTEXT：测通失败仍落盘）。
+        setState(() => _saving = false);
+        final leave = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('部分模型不可用'),
             content: Text(
               '${parts.join('、')}不可用，已保存但对应能力不可选',
             ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('返回编辑'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('确认保存'),
+              ),
+            ],
           ),
         );
+        if (!mounted) return;
+        if (leave == true) {
+          Navigator.of(context).pop();
+        }
         return;
       }
       Navigator.of(context).pop();

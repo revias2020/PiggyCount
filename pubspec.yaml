@@ -1,7 +1,7 @@
 name: piggy_count
 description: 小猪记账 — Android / iOS 个人记账应用
 publish_to: 'none'
-version: 0.4.1+8
+version: 0.4.2+9
 
 environment:
   sdk: ^3.12.2

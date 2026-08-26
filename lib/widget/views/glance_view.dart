@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
 
 import '../widget_data_service.dart';
-import '../widget_spec.dart' show HWSize;
+import '../widget_spec.dart' show HWSize, WidgetSpec;
 import 'widget_view_style.dart';
 
 /// 收支速览 headless 视图：小 / 中（ADR-024 仿毛玻璃）。
+///
+/// 中号：画布固定 [WidgetSpec.glanceMedium]（364×182），内容浮卡
+/// [WidgetSpec.glanceMediumContentHeight]（162），上下透明各 10；今日区与柱图
+/// 定高排布（今日行 46、柱图 76，距卡底 14），无动态撑开。
 class GlanceView extends StatelessWidget {
   const GlanceView.medium({
     super.key,
@@ -76,7 +80,7 @@ class GlanceView extends StatelessWidget {
   Widget _buildSmall() {
     final textSecondary = widgetTextSecondary();
     final pad = width < 130 ? 10.0 : 12.0;
-    // 顶行圆点+「今日支出」+眼睛；金额约 20；本月两列均分无竖线；底栏标签 8。
+    // 顶行圆点+「今日支出」；金额约 20（点金额=隐私）；本月两列均分无竖线；底栏标签 8。
     return Container(
       width: width,
       height: height,
@@ -89,6 +93,7 @@ class GlanceView extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Container(
                 width: 8,
@@ -105,17 +110,11 @@ class GlanceView extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 11,
                     color: textSecondary,
+                    height: 1.0,
                   ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
-              ),
-              Icon(
-                amountsHidden
-                    ? Icons.visibility_off_outlined
-                    : Icons.visibility_outlined,
-                size: 18,
-                color: widgetTextTertiary(),
               ),
             ],
           ),
@@ -196,8 +195,14 @@ class GlanceView extends StatelessWidget {
 
   Widget _buildMedium() {
     final textSecondary = widgetTextSecondary();
-    final compact = height < 140;
-    final pad = compact ? 10.0 : 14.0;
+    const contentH = WidgetSpec.glanceMediumContentHeight;
+    const pad = WidgetSpec.glanceMediumPad;
+    const todayH = WidgetSpec.glanceMediumTodayRowHeight;
+    const gap = WidgetSpec.glanceMediumTodayChartGap;
+    const chartH = WidgetSpec.glanceMediumChartHeight;
+    // 画布 182、浮卡 162 → 上下透明各 10。
+    final verticalPad =
+        ((height - contentH) / 2).clamp(0.0, height / 2);
     final days = last7Days.isEmpty
         ? List.generate(
             7,
@@ -213,83 +218,72 @@ class GlanceView extends StatelessWidget {
     return Container(
       width: width,
       height: height,
-      decoration: BoxDecoration(
-        color: widgetCardBackground(),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      padding: EdgeInsets.all(pad),
-      child: Column(
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: _todayBlock(
-                  todayExpenseLabel,
-                  _money(todayExpense),
-                  kWidgetChartExpense,
-                  textSecondary,
-                  showEye: true,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _todayBlock(
-                  todayIncomeLabel,
-                  _money(todayIncome),
-                  kWidgetChartIncome,
-                  textSecondary,
-                  showEye: false,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Container(
-                width: compact ? 36 : 40,
-                height: compact ? 36 : 40,
-                decoration: BoxDecoration(
-                  color: themeColor,
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(Icons.add, color: Colors.white, size: 22),
-              ),
-            ],
-          ),
-          SizedBox(height: compact ? 8 : 12),
-          Expanded(
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                // 柱区固定高度，不随槽位把剩余空间撑满；过矮时再收缩以免溢出。
-                final desired = compact ? 40.0 : 52.0;
-                final chartH = desired < constraints.maxHeight
-                    ? desired
-                    : constraints.maxHeight;
-                return Align(
-                  alignment: Alignment.bottomCenter,
-                  child: SizedBox(
-                    height: chartH,
-                    width: double.infinity,
-                    child: Container(
-                      padding: EdgeInsets.fromLTRB(
-                        compact ? 6 : 10,
-                        compact ? 6 : 8,
-                        compact ? 6 : 10,
-                        compact ? 2 : 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: widgetInnerPanel(),
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: _WeekChart(
-                        days: days,
-                        amountsHidden: amountsHidden,
-                      ),
+      color: Colors.transparent,
+      padding: EdgeInsets.symmetric(vertical: verticalPad),
+      child: Container(
+        width: width,
+        height: contentH,
+        decoration: BoxDecoration(
+          color: widgetCardBackground(),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        padding: const EdgeInsets.all(pad),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SizedBox(
+              height: todayH,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: _todayBlock(
+                      todayExpenseLabel,
+                      _money(todayExpense),
+                      kWidgetChartExpense,
+                      textSecondary,
                     ),
                   ),
-                );
-              },
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _todayBlock(
+                      todayIncomeLabel,
+                      _money(todayIncome),
+                      kWidgetChartIncome,
+                      textSecondary,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: themeColor,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.add, color: Colors.white, size: 22),
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+            const SizedBox(height: gap),
+            SizedBox(
+              height: chartH,
+              width: double.infinity,
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+                decoration: BoxDecoration(
+                  color: widgetInnerPanel(),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: _WeekChart(
+                  days: days,
+                  amountsHidden: amountsHidden,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -298,13 +292,13 @@ class GlanceView extends StatelessWidget {
     String label,
     String value,
     Color dotColor,
-    Color labelColor, {
-    required bool showEye,
-  }) {
+    Color labelColor,
+  ) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Container(
               width: 7,
@@ -315,28 +309,19 @@ class GlanceView extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 5),
-            Flexible(
+            Expanded(
               child: Text(
                 label,
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w500,
                   color: labelColor,
+                  height: 1.0,
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-            if (showEye) ...[
-              const SizedBox(width: 4),
-              Icon(
-                amountsHidden
-                    ? Icons.visibility_off_outlined
-                    : Icons.visibility_outlined,
-                size: 16,
-                color: widgetTextTertiary(),
-              ),
-            ],
           ],
         ),
         const SizedBox(height: 6),

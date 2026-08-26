@@ -10,7 +10,10 @@ import android.widget.RemoteViews
 import es.antonborri.home_widget.HomeWidgetBackgroundIntent
 import es.antonborri.home_widget.HomeWidgetProvider
 
-/** 收支速览 · 小。整卡→记支出；右上 44dp 眼睛热区→隐藏金额（ADR-024 / 027 / 034）。 */
+/**
+ * 收支速览 · 小（ADR-061）。
+ * 今日支出大数字→金额隐私切换；其余→记支出。无眼睛图标。
+ */
 class GlanceSmallWidgetProvider : HomeWidgetProvider() {
     companion object {
         private const val TAG = "GlanceSmallWidget"
@@ -58,7 +61,7 @@ class GlanceSmallWidgetProvider : HomeWidgetProvider() {
                         ),
                     )
                     setOnClickPendingIntent(
-                        R.id.click_privacy,
+                        R.id.click_amount,
                         HomeWidgetBackgroundIntent.getBroadcast(
                             context,
                             Uri.parse("piggycount://privacy?size=small"),

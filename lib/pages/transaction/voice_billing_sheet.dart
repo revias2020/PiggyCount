@@ -50,7 +50,8 @@ class _VoiceBillingSheetState extends ConsumerState<_VoiceBillingSheet> {
   @override
   void dispose() {
     try {
-      ref.read(voiceRecognitionSessionProvider).cancel();
+      // 弹层结束：停麦并条件还原 Android 音频模式（ADR-060）。
+      ref.read(voiceRecognitionSessionProvider).cancel(restoreAudio: true);
     } catch (_) {}
     super.dispose();
   }
@@ -275,9 +276,21 @@ class _VoiceBillingSheetState extends ConsumerState<_VoiceBillingSheet> {
             ),
           ),
           const SizedBox(height: 12),
-          const Text(
-            '语音记账',
-            style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  '语音记账',
+                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+                ),
+              ),
+              IconButton(
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(Icons.close),
+                tooltip: '关闭',
+                visualDensity: VisualDensity.compact,
+              ),
+            ],
           ),
           if (engineLabel != null) ...[
             const SizedBox(height: 4),
@@ -324,26 +337,23 @@ class _VoiceBillingSheetState extends ConsumerState<_VoiceBillingSheet> {
                 _bills = _bills.where((x) => x != b).toList();
               }),
             ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('关闭'),
-              ),
-              const Spacer(),
-              if (_listening)
-                FilledButton(
-                  onPressed: _extracting ? null : _stopAndExtract,
-                  child: const Text('识别'),
-                )
-              else if (_bills.isEmpty)
-                FilledButton(
+          if (_listening || _bills.isEmpty) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                TextButton(
                   onPressed: _extracting ? null : _startListen,
                   child: const Text('重新说'),
                 ),
-            ],
-          ),
+                const Spacer(),
+                if (_listening)
+                  FilledButton(
+                    onPressed: _extracting ? null : _stopAndExtract,
+                    child: const Text('识别'),
+                  ),
+              ],
+            ),
+          ],
         ],
       ),
     );

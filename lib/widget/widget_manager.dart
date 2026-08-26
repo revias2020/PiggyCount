@@ -122,19 +122,6 @@ class WidgetManager {
     }
   }
 
-  Future<Size> _resolveMediumLogicalSize() async {
-    try {
-      final w = await HomeWidget.getWidgetData<int>(WidgetSpec.mediumWidthKey);
-      final h = await HomeWidget.getWidgetData<int>(WidgetSpec.mediumHeightKey);
-      if (w != null && h != null && w > 0 && h > 0) {
-        return Size(w.toDouble(), h.toDouble());
-      }
-    } catch (e) {
-      debugPrint('read medium slot size failed: $e');
-    }
-    return WidgetSpec.glanceMedium.logicalSize;
-  }
-
   Future<void> _renderGlance(
     WidgetSpec spec, {
     required Color themeColor,
@@ -145,9 +132,7 @@ class WidgetManager {
     required List<GlanceDayPoint> last7Days,
     required bool amountsHidden,
   }) async {
-    final size = spec.size == HWSize.medium
-        ? await _resolveMediumLogicalSize()
-        : spec.logicalSize;
+    final size = spec.logicalSize;
     final Widget view;
     if (spec.size == HWSize.small) {
       view = GlanceView.small(

@@ -151,6 +151,11 @@ class MainActivity : FlutterFragmentActivity() {
         // Dart 侧挂好 handler 即可；原生只负责推送 onWidgetRefresh。
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, WidgetRefreshBridge.CHANNEL)
 
+        VoiceAudioSessionBridge.register(
+            flutterEngine.dartExecutor.binaryMessenger,
+            this,
+        )
+
         registerWidgetRefreshReceiver()
 
         // 若冷启动时已拷好分享图，延迟通知 Dart

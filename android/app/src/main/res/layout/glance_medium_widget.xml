@@ -13,53 +13,118 @@
         android:scaleType="fitCenter"
         android:contentDescription="@string/widget_medium_name" />
 
-    <!-- 上：支出 | 收入 | + （weight 3）；支出栏右上 44dp 眼睛；下=近7日图（weight 2，对齐固定柱区）。 -->
+    <!--
+      热区对齐渲图画布 364×182：上下透明各 10；浮卡 162（ADR-061）。
+      卡内：顶垫 14 / 今日 46（标签 20 + 金额 26）/ 间距 12 / 柱图 76 / 底垫 14。
+      金额行→隐私；「+」→记支出；柱图→报表近 7 日；标签与垫片→明细；透明边不可点。
+    -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
         android:baselineAligned="false">
 
+        <!-- RemoteViews 不支持 Space；用空 FrameLayout 占透明边。 -->
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="10" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
-            android:layout_weight="3"
-            android:orientation="horizontal"
+            android:layout_weight="162"
+            android:orientation="vertical"
             android:baselineAligned="false">
 
+            <!-- 顶垫→明细 -->
             <FrameLayout
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1">
+                android:id="@+id/click_details_top_pad"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="14" />
+
+            <!-- 今日行：标签 / 金额 / 「+」 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="46"
+                android:orientation="horizontal"
+                android:baselineAligned="false">
+
+                <!-- 今日支出列 -->
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:baselineAligned="false">
+
+                    <FrameLayout
+                        android:id="@+id/click_details_expense_label"
+                        android:layout_width="match_parent"
+                        android:layout_height="0dp"
+                        android:layout_weight="20" />
+
+                    <FrameLayout
+                        android:id="@+id/click_today_expense"
+                        android:layout_width="match_parent"
+                        android:layout_height="0dp"
+                        android:layout_weight="26" />
+                </LinearLayout>
+
+                <!-- 今日收入列 -->
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:baselineAligned="false">
+
+                    <FrameLayout
+                        android:id="@+id/click_details_income_label"
+                        android:layout_width="match_parent"
+                        android:layout_height="0dp"
+                        android:layout_weight="20" />
+
+                    <FrameLayout
+                        android:id="@+id/click_today_income"
+                        android:layout_width="match_parent"
+                        android:layout_height="0dp"
+                        android:layout_weight="26" />
+                </LinearLayout>
 
                 <FrameLayout
-                    android:id="@+id/click_today_expense"
-                    android:layout_width="match_parent"
+                    android:id="@+id/click_add"
+                    android:layout_width="48dp"
                     android:layout_height="match_parent" />
+            </LinearLayout>
 
-                <FrameLayout
-                    android:id="@+id/click_privacy"
-                    android:layout_width="44dp"
-                    android:layout_height="44dp"
-                    android:layout_gravity="top|end" />
-            </FrameLayout>
-
+            <!-- 今日与柱图间距→明细 -->
             <FrameLayout
-                android:id="@+id/click_today_income"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1" />
+                android:id="@+id/click_details_gap"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="12" />
 
+            <!-- 柱图→报表自定义近 7 天 -->
             <FrameLayout
-                android:id="@+id/click_add"
-                android:layout_width="48dp"
-                android:layout_height="match_parent" />
+                android:id="@+id/click_chart"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="76" />
+
+            <!-- 底垫→明细 -->
+            <FrameLayout
+                android:id="@+id/click_details_bottom_pad"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="14" />
         </LinearLayout>
 
         <FrameLayout
-            android:id="@+id/click_chart"
             android:layout_width="match_parent"
             android:layout_height="0dp"
-            android:layout_weight="2" />
+            android:layout_weight="10" />
     </LinearLayout>
 </FrameLayout>

@@ -11,6 +11,7 @@ import 'package:whisper_ggml/whisper_ggml.dart';
 
 import '../../ai/ai_provider_store.dart';
 import '../../ai/ai_provider_config.dart';
+import '../platform/voice_audio_session.dart';
 import '../system/logger_service.dart';
 import 'offline_asr_model_store.dart';
 import 'speech_asr_service.dart';
@@ -73,9 +74,11 @@ class VoiceRecognitionSession {
     required SpeechRecognitionEngineKind engine,
     required void Function(String partial) onPartial,
   }) async {
-    await cancel();
+    // 「重新说」走 cancel 但不还原音频（ADR-060）。
+    await cancel(restoreAudio: false);
     _active = engine;
     _lastPartial = '';
+    await VoiceAudioSession.begin();
     switch (engine) {
       case SpeechRecognitionEngineKind.system:
         await _systemAsr.start(onPartial: (t) {
@@ -89,6 +92,7 @@ class VoiceRecognitionSession {
         onPartial('正在聆听…');
         await _recorder.start();
     }
+    await VoiceAudioSession.captureLeft();
   }
 
   Future<VoiceListenOutcome> stop() async {
@@ -118,7 +122,8 @@ class VoiceRecognitionSession {
     }
   }
 
-  Future<void> cancel() async {
+  /// [restoreAudio]：仅弹层结束时为 true；「重新说」必须为 false（ADR-060）。
+  Future<void> cancel({bool restoreAudio = false}) async {
     try {
       await _systemAsr.cancel();
     } catch (_) {}
@@ -128,6 +133,9 @@ class VoiceRecognitionSession {
     await _disposeVosk();
     _active = null;
     _lastPartial = '';
+    if (restoreAudio) {
+      await VoiceAudioSession.restoreIfNeeded();
+    }
   }
 
   Future<void> _startVosk(void Function(String partial) onPartial) async {
