@@ -320,7 +320,7 @@ ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040 / 051（及明细同步钮 ADR
 | 截图自动 | 「我的」开关（默认关） | 通知 → Vision → **自动落库** |
 | 分享入账 | 系统分享 | 始终可收（不受截图开关）→ 同上 |
 
-**分享入账（Android）：** `ShareRelayActivity`（透明）接 `ACTION_SEND` / **`ACTION_SEND_MULTIPLE`**（ADR-058）→ 拷图（上限 9，超出截取前 9）→ 以 `SINGLE_TOP|CLEAR_TOP|NEW_TASK` 打进 `MainActivity`。**热启动**不得出现启动页；冷启动仍走主界面 LaunchTheme。收到分享后尽快 `moveTaskToBack` 回到来源 App；直存批次进行中返回键同样送后台（不 `finish`），避免拆掉 Flutter 引擎导致识别静默中断。多选截取时进度/结果通知注明「已截取前 9 张」。
+**分享入账（Android）：** `ShareRelayActivity`（透明）接 `ACTION_SEND` / **`ACTION_SEND_MULTIPLE`**（ADR-058）→ 拷图（上限 9，超出截取前 9）→ **拷图成功即拉起同 id FGS 分享已收到进度**（「已收到，准备识别…」，ADR-063）→ 以 `SINGLE_TOP|CLEAR_TOP|NEW_TASK` 打进 `MainActivity`（**无固定 500/600ms**；冷启 onCreate 只写 pending 由 `getPending` 取走，热启 onNewIntent 立即推送）。**热启动**不得出现启动页；冷启动仍走主界面 LaunchTheme。Dart 接手后 `startForegroundService` 刷新文案，**先 `moveTaskToBack` 回源**，再 **「已收到…」最短展示 1s**（`ShareEarlyProgressGate`，回源后起算）后进识别；直存批次进行中返回键同样送后台（不 `finish`），避免拆掉 Flutter 引擎导致识别静默中断。多选截取时早期/结果通知注明「已截取前 9 张」。
 
 **前台多图（ADR-058）：** 扇形「图片」/备注旁相册用系统多选（`pickMultiImage`），上限 9、超出截取并 Toast；**不做** App 内选图闸门。全部串行 Vision 后再出确认层；loading 可取消（丢弃 inflight，已完成组仍进确认层）。确认层**按图分组**（组头小缩略图可点全屏静态原图）；失败/空结果组可重试。拍照仍单张。iOS 同步前台多选；多选分享仅 Android。
 
@@ -328,9 +328,9 @@ ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040 / 051（及明细同步钮 ADR
 
 **后台：** `AutoBillingService` 串行；结果通知按 **账单笔数** 分桶（成功/跳过/失败，ADR-056），整图无候选另述「N 张未入账」；点击：成功笔>0→明细，否则→明细+框（未点不弹）；无通知权限仍可直存。未就绪：后台失败通知引导设置；前台 Toast+去设置。直存批次开始时开启返回保活，批次结束关闭。
 
-**后台直存前台服务（ADR-054）：** Android 截图/分享 Vision 批次持有 `AutoBillingForegroundService`（`dataSync`），保证 App 在 `paused` 或冷启动分享后立即 `moveTaskToBack` 时 Dart 与网络仍可执行；进度通知与 `piggy_auto_billing` 渠道同 id（1001）。分享入账须在 `moveTaskToBack` **之前**拉起 FGS。传输失败且当时 App 不在前台：入本机待重试队列，通知「打开 App 后将自动重试」；`resumed` 时 `retryPendingOnResume` 串行重跑（不入失败结果档）。
+**后台直存前台服务（ADR-054 / 063）：** Android 截图/分享 Vision 批次持有 `AutoBillingForegroundService`（`dataSync`），保证 App 在 `paused` 或冷启动分享后立即 `moveTaskToBack` 时 Dart 与网络仍可执行；进度通知与 `piggy_auto_billing` 渠道同 id（1001）。分享入账：**ShareRelay 拷图成功即起 FGS**（早于 Dart / 早于主界面闪现，ADR-063），且须在 `moveTaskToBack` **之前**已持有 FGS（ADR-054）。Dart `isActive` 须与原生对齐，批次结束再 `stop`。传输失败且当时 App 不在前台：入本机待重试队列，通知「打开 App 后将自动重试」；`resumed` 时 `retryPendingOnResume` 串行重跑（不入失败结果档）。
 
-**截图稳定期 + 替换关联窗（ADR-045 / ADR-048）：** 稳定期默认 **3s**（自该路径最近变更；同路径再 `onChange` / `IS_PENDING` / size 变 → 重置）。另有 **15s** 替换关联窗（自首次检测），处理「编辑另存新文件名 + 删原图」。稳定期满且窗内尚无第二张可发早期进度，但 **Vision/落库须过入账门闩**（关联窗满或替换/连拍判定结束）。窗内原仍在又来新图 → 短观察 **2s**（旧消失=替换，仍在=连拍）。替换后新文件只再走 3s 稳定期。删除且无后继 → 取消。稳定期/门闩前不入已处理集。连拍各路径独立；Vision 仍串行。分享入账、前台选图不走上述窗口。
+**截图稳定期 + 替换关联窗（ADR-045 / ADR-048 / ADR-064）：** 稳定期默认 **3s**（自该路径最近变更；同路径再 `onChange` / `IS_PENDING` / size 变 → 重置）。**替换关联窗 15s 自最近一次稳定期满起算**（编辑重置会推迟起算），处理「另存新文件名 + 删原图」。另有 **候选总时限 2 分钟**（自首次检出硬切，超时取消并通知）。稳定期满且尚无第二张可发早期进度，但 **Vision/落库须过入账门闩**（关联窗满或替换/连拍判定结束）。窗内原仍在又来新图 → 短观察 **2s**（旧消失=替换，仍在=连拍）。替换后新文件只再走 3s 稳定期。删除且内存无后继 → **删原补扫**（同目录 + 截图关键词 + DATE_ADDED ±15s）再认；仍无则取消并通知「截图已取消，未入账」。**非候选过滤**：`IS_TRASHED`、path/name 含 trash、DISPLAY_NAME 含 `@delete`（如 `gallery@delete`）的行不进稳定期（短日志，不入候选）；删原补扫同样跳过。稳定期/门闩前不入已处理集。连拍各路径独立；Vision 仍串行。分享入账、前台选图不走上述窗口。
 
 Android：`ScreenshotObserver`（MediaStore + 稳定期 + 替换关联）。iOS：仅快捷指令引导。
 
@@ -342,7 +342,7 @@ Android：`ScreenshotObserver`（MediaStore + 稳定期 + 替换关联）。iOS�
 
 ### 代码
 
-`auto_billing_service.dart` · `billing_notification_service.dart` · `pending_billing_retry_store.dart` · `foreground_billing_bridge.dart` · `image_share_handler.dart` · `screenshot_monitor_service.dart` · `android_activity_bridge.dart` · Native `AutoBillingForegroundService.kt` · `ShareRelayActivity.kt` · `SharedImageIngress.kt` · `ScreenshotObserver.kt` · `MainActivity` activity channel · `speech_asr_service.dart` · `speech_engine_preference.dart` · `offline_asr_model_store.dart` · `voice_recognition_session.dart` · `voice_audio_recorder.dart` · `bill_select_tile.dart`
+`auto_billing_service.dart` · `billing_notification_service.dart` · `pending_billing_retry_store.dart` · `foreground_billing_bridge.dart` · `image_share_handler.dart` · `share_early_progress_gate.dart` · `screenshot_monitor_service.dart` · `android_activity_bridge.dart` · Native `AutoBillingForegroundService.kt` · `ShareRelayActivity.kt` · `SharedImageIngress.kt` · `ScreenshotObserver.kt` · `MainActivity` activity channel · `speech_asr_service.dart` · `speech_engine_preference.dart` · `offline_asr_model_store.dart` · `voice_recognition_session.dart` · `voice_audio_recorder.dart` · `bill_select_tile.dart`
 
 ---
 
@@ -434,7 +434,7 @@ Android：`ScreenshotObserver`（MediaStore + 稳定期 + 替换关联）。iOS�
 | 规格 | 布局与点击 |
 |---|---|
 | 小 | 圆点+「今日支出」（无眼睛）；底栏本月收支均分无竖线（标签 8）；**今日支出大数字**→金额隐私切换；其余→记支出；约 2×2 |
-| 中 | 今日支出\|收入 +「+」记支出 + 近 7 日柱（定高 76，距卡底 14）；画布固定 364×182、`resizeMode=none`；内容浮卡 364×162（上下透明各 10）；热区对齐浮卡；满行×高 2 |
+| 中 | 今日支出\|收入 +「+」记支出 + 近 7 日柱；**跟槽渲图**（ADR-062）：宽=槽宽、高=槽高，不锁 2:1、不分宽度桶；上下透明与浮卡按总高 `10:162:10` 比例始终画出；卡内今日/柱图按浮卡内比例；热区 weight 对齐；「+」热区勿固定 dp；满行×高 2 |
 
 **小号本月金额：** `<1k` 为 `¥`+整数；`[1k,1w)` 为 `¥x.xxk`；`≥1w` 为 `¥x.xxw`（档内截断两位）。今日支出仍完整两位小数。见 `formatWidgetMoneyCompact`。
 
@@ -442,7 +442,7 @@ Android：`ScreenshotObserver`（MediaStore + 稳定期 + 替换关联）。iOS�
 
 仿毛玻璃 ~85% 不透明。隐藏金额 `****`，柱压等高点。刷新：保存/回前台/~30分/每日0:00；添加时进程在则立刻重渲。金额隐私切换走后台就地重渲；写 `glance_privacy_toggled_at` 后 3s 内跳过主进程全量重渲（防二次闪烁）。
 
-渲图 → `home_widget` → RemoteViews（`fitCenter`；禁 `setScaleType`）。旧图保留至新图就绪。深链 `piggycount://`；关 Flutter 默认深链；与图标同 `MainActivity`（禁空 taskAffinity）。**桌面图标**冷启白猪；小组件经 `WidgetRelayActivity` 中转，冷/热均零启动页（冷启可接受短暂浅色等待）。
+渲图 → `home_widget` → RemoteViews（中号以 ADR-062 为准：跟槽 `W×H`，XML 写死 `fitCenter`，禁 `centerCrop` 裁透明边，禁运行时 `setScaleType`）。槽位：渲图宽 = `max(上报宽, minWidth 320, 设计宽 364, 屏宽÷格网列数×4格)`，高跟上报；options 未就绪保留上次槽；槽尺寸变化打一条 info（ADR-065，不做 options 全量 dump / onResume diag）；`WidgetSpec.resolveMediumLogicalSize()` 与隐私就地重渲共用。旧图保留至新图就绪。深链 `piggycount://`；关 Flutter 默认深链；与图标同 `MainActivity`（禁空 taskAffinity）。**桌面图标**冷启白猪；小组件经 `WidgetRelayActivity` 中转，冷/热均零启动页（冷启可接受短暂浅色等待）。
 
 ### 代码
 
@@ -462,7 +462,7 @@ Android：`ScreenshotObserver`（MediaStore + 稳定期 + 替换关联）。iOS�
 
 关于页入口（与使用教程同级）。关键节点 + 未捕获异常；48h + ≤2000 条。
 
-**节点域：** 启动失败；AI/测连失败与未就绪；**AI 每次生产请求（tag `AI`：调用 provider+model；Vision 回退时 3s 后重试 / 切换服务商，ADR-053）**；云同步；CSV；截图/分享/拍照选图失败；**截图稳定期/关联窗关键节点**（tag `Screenshot`：开始等待 / 变动重置 / 删除取消 / 短观察 / 替换 / 进度 / 门闩入账）。普通记账成功不打点。禁写 Key/Secret/整份 CSV。
+**节点域：** 启动失败；AI/测连失败与未就绪；**AI 每次生产请求（tag `AI`：调用 provider+model；Vision 回退时 3s 后重试 / 切换服务商，ADR-053）**；云同步；CSV；截图/分享/拍照选图失败；**截图稳定期/关联窗状态跃迁**（tag `Screenshot`：开始等待 / 变动重置 / 候选取消 / 非候选过滤 / 短观察结论 / 替换 / 门闩通过或失败 / 总时限 / 删原补扫；不含门闩心跳与「已静止」细拍，ADR-065）。普通记账成功不打点。禁写 Key/Secret/整份 CSV。临时联调 tag（如曾用的 `ShareProgress`）不得合入发布默认路径。
 
 导出：Android `Download/PiggyCount/`；iOS 分享。教程本轮不介绍日志。教程在关于页内可展开章节。
 
@@ -554,17 +554,17 @@ flutter build apk --release --split-per-abi
 | 017 / 035 / 036 | 标签色；新鲜度；chip 横滑 | |
 | 018 / 020 | 后台直存；确认复选 | |
 | 019 | ~~半卡左右记一笔~~ | **024 取代** |
-| 023–028 / 030 / 034 | 小组件 | 布局/渲图仍有效；热区 IA 以 **061** 为准 |
+| 023–028 / 030 / 034 | 小组件 | 布局/渲图基线；热区 IA 以 **061** 为准；中号画布尺寸以 **062** 为准 |
 | 029 | 统一账单行 | |
 | 031 | 退役空默认组 | 落点→外部导入（0039） |
 | 033 / 037 | 报表三卡；环 Top8；浮动球 | |
 | 039 / 0039 / 040 | 备注层 / 播种一次 / 弹层限高 | 039≠0039 |
 | 041 / 042 / 043 | 拆页；工作区合并；映射自动/忽略 | |
 | 044 | 账单身份与指纹分离 | 身份 UUID；指纹去重；预览折合；墓碑 90 天 |
-| 045 | 截图稳定期 | 安静等待；结束前不入已处理集；删除可取消；仅 Android 截图自动（时长与入账时机见 **048**） |
+| 045 | 截图稳定期 | 安静等待；结束前不入已处理集；删除可取消；仅 Android 截图自动（时长与入账时机见 **048** / **064**） |
 | 046 | 用户可见统计排除墓碑 | 报表/小组件/AI 只计存活；删除确认「删除后不可恢复」 |
 | 047 | AI 分类消歧 | Prompt 主类分组 +「主类-子类」；匹配兼容裸名；展示仍裸名 |
-| 048 | 截图替换关联窗 | 稳定期 3s + 关联窗 15s；进度可早、落库门闩晚；短观察 2s；另存新文件+删原 |
+| 048 | 截图替换关联窗 | 稳定期 3s + 关联窗 15s；进度可早、落库门闩晚；短观察 2s；另存新文件+删原；**起算与补扫见 064** |
 | 049 | 下线 AI 智能助手 | 报表球/对话/开关移除；扇形与后台直存保留 |
 | 050 | 待核对账单 | 高亮仅前台；信封持久+红点+一键已读；screenshot/share；syncId；仅明细 |
 | 051 | 记一笔时间选择 | 弃用系统表盘；Dialog 双输入 + 0–23 / 每 5 分快捷格 |
@@ -577,4 +577,8 @@ flutter build apk --release --split-per-abi
 | 058 | 多图选图与多选分享 | 系统多选（无 App 闸门）；确认按图分组；上限 9 截取；Android `SEND_MULTIPLE` 同后台直存 |
 | 059 | 智谱语音测连音频 | 测连用 1s 16-bit 静音 WAV（对齐 BeeCount）；空 data 触发 1210；静音空响应算成功；音频块在文本前 |
 | 060 | 语音记账音频模式还原 | 仅 Android；关层条件还原；重新说不还原；mode 仍为我们留下的通信类才写回 |
-| 061 | 收支速览热区 | 金额热区=隐私切换；去眼睛；中号「+」记支出、柱图报表近 7 日、其余浮卡区明细；见 `docs/adr/061-*.md` |
+| 061 | 收支速览热区 | 金额热区=隐私切换；去眼睛；中号「+」记支出、柱图报表近 7 日、其余浮卡区明细 |
+| 062 | 中号跟槽渲图 | 渲图宽 max(上报,320,364,格网估宽)；单候选直取、多候选优先面积；options 未就绪保留上次槽；纵向 `10:162:10`；全量 options / onResume diag 已废（见 **065**） |
+| 063 | 分享入账早期 FGS | Relay 即 FGS；去 notify delay；Dart startForegroundService；已收到最短 1s；见 `docs/adr/063-*.md` |
+| 064 | 截图关联窗起算与补扫 | 关联窗自稳定期满起算；总时限 2min 硬切；删原补扫 ±15s；取消统一通知；部分取代 **048** |
+| 065 | 日志去掉临时排障面 | 删 `ShareProgress` / Widget options dump；截图 settle 仅状态跃迁；FGS/ShareRelay/语音音频只留失败日志；见 `docs/adr/065-*.md` |

@@ -39,7 +39,6 @@ class MainActivity : FlutterFragmentActivity() {
     /** 后台直存进行中：返回键送后台，不销毁。 */
     private val retainOnBackCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
-            Log.i(TAG, "retainOnBack → moveTaskToBack")
             moveTaskToBack(true)
         }
     }
@@ -50,15 +49,13 @@ class MainActivity : FlutterFragmentActivity() {
         }
         super.onCreate(savedInstanceState)
         onBackPressedDispatcher.addCallback(this, retainOnBackCallback)
-        Log.i(TAG, "onCreate action=${intent?.action}")
-        handleSharedImage(intent)
+        handleSharedImage(intent, pushIfReady = false)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        Log.i(TAG, "onNewIntent action=${intent.action}")
-        handleSharedImage(intent)
+        handleSharedImage(intent, pushIfReady = true)
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -116,11 +113,9 @@ class MainActivity : FlutterFragmentActivity() {
                     "setRetainOnBack" -> {
                         val enabled = call.arguments as? Boolean ?: false
                         retainOnBackCallback.isEnabled = enabled
-                        Log.i(TAG, "setRetainOnBack=$enabled")
                         result.success(null)
                     }
                     "moveTaskToBack" -> {
-                        Log.i(TAG, "moveTaskToBack")
                         moveTaskToBack(true)
                         result.success(null)
                     }
@@ -129,7 +124,6 @@ class MainActivity : FlutterFragmentActivity() {
                         val title = args?.get("title") as? String ?: "智能记账"
                         val body = args?.get("body") as? String ?: "识别进行中…"
                         AutoBillingForegroundService.start(this, title, body)
-                        Log.i(TAG, "startBillingForeground")
                         result.success(null)
                     }
                     "updateBillingForeground" -> {
@@ -141,7 +135,6 @@ class MainActivity : FlutterFragmentActivity() {
                     }
                     "stopBillingForeground" -> {
                         AutoBillingForegroundService.stop(this)
-                        Log.i(TAG, "stopBillingForeground")
                         result.success(null)
                     }
                     else -> result.notImplemented()
@@ -158,28 +151,14 @@ class MainActivity : FlutterFragmentActivity() {
 
         registerWidgetRefreshReceiver()
 
-        // 若冷启动时已拷好分享图，延迟通知 Dart
-        pendingSharedPaths?.let { paths ->
-            val truncated = pendingSharedTruncated
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                notifyShared(paths, truncated)
-            }, 600)
-        }
+        // 冷启：只保留 pending，由 Dart bind → getPendingSharedImages 取走（ADR-063）。
+        // 勿在此处 notify：handler 往往尚未挂上，固定 delay 已废止。
     }
 
-    private fun handleSharedImage(intent: Intent?) {
+    private fun handleSharedImage(intent: Intent?, pushIfReady: Boolean) {
         // 优先：ShareRelay 已拷好的路径（热启走 onNewIntent，冷启走 onCreate）
         SharedImageIngress.pathsFromIntent(intent)?.let { copied ->
-            pendingSharedPaths = copied.paths
-            pendingSharedTruncated = copied.truncated
-            Log.i(
-                TAG,
-                "shared image paths: ${copied.paths.size}" +
-                    if (copied.truncated) " truncated" else "",
-            )
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                notifyShared(copied.paths, copied.truncated)
-            }, 500)
+            acceptSharedPaths(copied, pushIfReady = pushIfReady)
             return
         }
 
@@ -189,15 +168,39 @@ class MainActivity : FlutterFragmentActivity() {
         try {
             val copied = SharedImageIngress.copyUrisToCache(this, uris)
             if (copied.paths.isEmpty()) return
-            pendingSharedPaths = copied.paths
-            pendingSharedTruncated = copied.truncated
-            Log.i(TAG, "shared images saved: ${copied.paths.size}")
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                notifyShared(copied.paths, copied.truncated)
-            }, 500)
+            // 直达路径无 ShareRelay：此处补早期 FGS（ADR-063）
+            val body = if (copied.truncated) {
+                "已收到（已截取前 9 张），准备识别…"
+            } else {
+                "已收到，准备识别…"
+            }
+            AutoBillingForegroundService.start(this, "分享入账", body)
+            acceptSharedPaths(copied, pushIfReady = pushIfReady)
         } catch (e: Exception) {
             Log.e(TAG, "handleSharedImage failed", e)
         }
+    }
+
+    /**
+     * 写入 pending。
+     * [pushIfReady]：热启立即推送；冷启为 false，只靠 getPending，避免 handler 未挂上丢事件（ADR-063）。
+     */
+    private fun acceptSharedPaths(
+        copied: SharedImageIngress.CopiedShare,
+        pushIfReady: Boolean,
+    ) {
+        pendingSharedPaths = copied.paths
+        pendingSharedTruncated = copied.truncated
+        if (pushIfReady) {
+            tryNotifyShared()
+        }
+    }
+
+    private fun tryNotifyShared() {
+        val paths = pendingSharedPaths ?: return
+        if (paths.isEmpty()) return
+        if (flutterEngineRef == null) return
+        notifyShared(paths, pendingSharedTruncated)
     }
 
     private fun notifyShared(paths: List<String>, truncated: Boolean) {

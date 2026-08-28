@@ -80,7 +80,9 @@ abstract final class WidgetPrivacy {
 
     final spec =
         size == HWSize.small ? WidgetSpec.glanceSmall : WidgetSpec.glanceMedium;
-    final logical = spec.logicalSize;
+    final logical = size == HWSize.medium
+        ? await WidgetSpec.resolveMediumLogicalSize()
+        : spec.logicalSize;
 
     final Widget view;
     if (size == HWSize.small) {

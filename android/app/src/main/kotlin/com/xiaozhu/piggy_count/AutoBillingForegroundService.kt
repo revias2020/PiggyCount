@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 
 /**
@@ -52,6 +53,7 @@ class AutoBillingForegroundService : Service() {
     }
 
     companion object {
+        private const val TAG = "PiggyBillingFgs"
         const val CHANNEL_ID = "piggy_auto_billing"
         const val NOTIFICATION_ID = 1001
 
@@ -64,36 +66,54 @@ class AutoBillingForegroundService : Service() {
         private const val DEFAULT_BODY = "识别进行中…"
 
         fun start(context: Context, title: String, body: String) {
-            val intent = Intent(context, AutoBillingForegroundService::class.java).apply {
+            val app = context.applicationContext
+            ensureChannel(app)
+            val intent = Intent(app, AutoBillingForegroundService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_TITLE, title)
                 putExtra(EXTRA_BODY, body)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                @Suppress("DEPRECATION")
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    app.startForegroundService(intent)
+                } else {
+                    @Suppress("DEPRECATION")
+                    app.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "start() failed title=$title body=$body", e)
             }
         }
 
         fun update(context: Context, title: String, body: String) {
-            val intent = Intent(context, AutoBillingForegroundService::class.java).apply {
+            val app = context.applicationContext
+            ensureChannel(app)
+            val intent = Intent(app, AutoBillingForegroundService::class.java).apply {
                 action = ACTION_UPDATE
                 putExtra(EXTRA_TITLE, title)
                 putExtra(EXTRA_BODY, body)
             }
-            context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    app.startForegroundService(intent)
+                } else {
+                    @Suppress("DEPRECATION")
+                    app.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "update() failed title=$title body=$body", e)
+            }
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, AutoBillingForegroundService::class.java).apply {
+            val app = context.applicationContext
+            val intent = Intent(app, AutoBillingForegroundService::class.java).apply {
                 action = ACTION_STOP
             }
-            context.startService(intent)
+            app.startService(intent)
         }
 
-        private fun ensureChannel(context: Context) {
+        fun ensureChannel(context: Context) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
             val nm = context.getSystemService(NotificationManager::class.java)
             if (nm.getNotificationChannel(CHANNEL_ID) != null) return
@@ -118,7 +138,8 @@ class AutoBillingForegroundService : Service() {
                 .setContentText(body)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setOngoing(true)
-                .setOnlyAlertOnce(true)
+                // 首次「已收到」须出现在状态栏；后续进度更新不重复横幅
+                .setOnlyAlertOnce(false)
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .build()
         }

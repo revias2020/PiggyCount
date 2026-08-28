@@ -12,6 +12,7 @@ import android.util.Log
  * 避免分享 Intent 把带 LaunchTheme 的主界面再走一遍 onCreate 闪启动页。
  *
  * 支持单张 [Intent.ACTION_SEND] 与多选 [Intent.ACTION_SEND_MULTIPLE]（ADR-058）。
+ * 拷图成功即拉起进度 FGS（ADR-063），不等 Dart 就绪。
  */
 class ShareRelayActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -29,11 +30,12 @@ class ShareRelayActivity : Activity() {
                 finish()
                 return
             }
-            Log.i(
-                TAG,
-                "share relay → MainActivity: ${copied.paths.size} path(s)" +
-                    if (copied.truncated) " truncated" else "",
-            )
+            val body = if (copied.truncated) {
+                "已收到（已截取前 9 张），准备识别…"
+            } else {
+                "已收到，准备识别…"
+            }
+            AutoBillingForegroundService.start(this, "分享入账", body)
             startActivity(
                 Intent(this, MainActivity::class.java).apply {
                     action = SharedImageIngress.ACTION_SHARED_IMAGE

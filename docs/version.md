@@ -1,5 +1,43 @@
 # 小猪记账 · 升级日志
 
+## 0.4.3
+
+**版本：** `0.4.3+10`  
+**相对：** `0.4.2+9`  
+**日期：** 2026-08-28
+
+### 截图自动：关联窗起算与删原补扫（ADR-064）
+
+编辑另存新名并删原图时，旧「自首次检出固定 15s」关联窗易在慢编辑后丢原、静默取消。改为：**替换关联窗 15s 自最近一次稳定期满起算**；**候选总时限 2 分钟**硬切；原文件不在且无后继时 **删原补扫**（同目录 + 截图关键词 + ±15s）；取消统一通知「截图已取消，未入账」。
+
+### 截图自动：非候选过滤（回收站误检）
+
+删除/进回收站会触发 MediaStore，且 trash 编码名常仍含 `Screenshot`，曾被当成新截图开稳定期。现对 `IS_TRASHED`、path/name 含 trash、DISPLAY_NAME 含 `@delete` 做非候选过滤（短日志）；删原补扫同样跳过。
+
+### 分享已收到进度：回源后起算（ADR-063）
+
+热启分享时「已收到…」曾在 MainActivity 前台 hold，下拉栏常看不到，回源后已被盖成「正在识别」。改为：贴 FGS 后**先** `moveTaskToBack`，沉降约 300ms，再 hold ≥1s，然后进 Vision。
+
+### 中号收支速览：跟槽渲图（ADR-062）
+
+废止固定 364×182 / 宽度分桶；渲图宽高跟桌面槽位走，纵向按 `10:162:10` 画出透明边；`fitCenter`，不裁透明边。
+
+### 程序日志：去掉临时排障面（ADR-065）
+
+删 Dart `ShareProgress` 时序日志与 Widget options 全量 dump / `onResume` diag；截图 `settleLog` 仅保留状态跃迁（开始等待 / 重置 / 取消 / 非候选 / 短观察结论 / 替换 / 门闩通过或失败 / 总时限 / 删原补扫）。原生 FGS / ShareRelay / 语音音频会话只留 `Log.e`（及无图 uri 的 `Log.w`），去掉成功路径 `Log.i`。
+
+### 版本与文档
+
+- `pubspec.yaml` → `0.4.3+10`
+- `docs/development.md` / `docs/framework.md` / `CONTEXT.md`：ADR-062 / 063（回源 hold）/ 064 / 065；非候选过滤
+- GitHub Release 附带 `arm64-v8a` 真机测试包（本机 `venv/APK` 另留 split-per-abi 全套）
+
+### 不受影响
+
+前台选图不走截图关联窗；稳定期 3s / 短观察 2s / 替换后只再走稳定期仍按 ADR-048 保留部分。识别 / 落库 / 结果通知语义不变。
+
+---
+
 ## 0.4.2
 
 **版本：** `0.4.2+9`  
@@ -26,15 +64,20 @@
 
 去掉眼睛图标；**金额热区**改为金额隐私切换（小/中独立）。小号：今日支出大数字→隐私，其余→记支出。中号：支出/收入金额行→隐私；「+」→记支出；柱图→报表近 7 日；标签与垫片等其余浮卡区→明细。中号画布固定 364×182（`resizeMode=none`），内容浮卡 364×162、上下透明各 10；柱图定高 76、距卡底 14。
 
+### 分享入账早期进度（ADR-063）
+
+热启分享后曾有 1–3s 无通知空窗（等 Dart 再起 FGS，且含固定 500/600ms delay）。改为 `ShareRelay` 拷图成功即起同 id FGS（「已收到，准备识别…」）；去掉 notify 固定 delay；Dart 接手 `startForegroundService`；**「已收到…」最短展示 1s**（`ShareEarlyProgressGate`）后再进 Vision 进度。
+
 ### 版本与文档
 
 - `pubspec.yaml` → `0.4.2+9`
-- `docs/development.md` / `docs/framework.md`：ADR-059 / ADR-060 / ADR-061
+- `docs/development.md` / `docs/framework.md` / `CONTEXT.md`：ADR-059 / ADR-060 / ADR-061 / ADR-063
+- `docs/adr/063-share-ingress-early-fgs.md`
 - GitHub Release 附带 `arm64-v8a` 真机测试包（本机 `venv/APK` 另留 split-per-abi 全套）
 
 ### 不受影响
 
-本机 schema、账单身份 / 指纹规则未变。0.4.1 前台弹层引导、多图/多选分享、多引擎语音等行为保持。
+本机 schema、账单身份 / 指纹规则未变。0.4.1 前台弹层引导、多图/多选分享、多引擎语音等行为保持。识别 / 落库 / 结果通知语义不变。
 
 ---
 

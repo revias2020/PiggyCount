@@ -132,7 +132,9 @@ class WidgetManager {
     required List<GlanceDayPoint> last7Days,
     required bool amountsHidden,
   }) async {
-    final size = spec.logicalSize;
+    final size = spec.size == HWSize.medium
+        ? await WidgetSpec.resolveMediumLogicalSize()
+        : spec.logicalSize;
     final Widget view;
     if (spec.size == HWSize.small) {
       view = GlanceView.small(

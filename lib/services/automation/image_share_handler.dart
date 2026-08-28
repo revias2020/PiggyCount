@@ -2,9 +2,9 @@ import 'package:flutter/services.dart';
 
 import '../platform/android_activity_bridge.dart';
 import '../platform/foreground_billing_bridge.dart';
-import '../system/logger_service.dart';
 import 'auto_billing_service.dart';
 import 'billing_image_limits.dart';
+import 'share_early_progress_gate.dart';
 
 /// 系统分享图片入账：冷/热启动均由原生写入临时文件后经 MethodChannel 通知。
 ///
@@ -12,8 +12,9 @@ import 'billing_image_limits.dart';
 /// 始终走后台智能记账（通知 + 自动落库），不打开确认弹层（ADR-018）。
 /// 支持单张与多选（`SEND_MULTIPLE`，ADR-058）。
 ///
-/// 收到分享后尽快 [AndroidActivityBridge.moveTaskToBack]，回到分享来源
-/// （如系统截图编辑）；直存期间返回键由 [AutoBillingService] 保活，不 finish。
+/// ShareRelay 拷图成功即起 FGS（ADR-063）；Dart 接手时再次 [ForegroundBillingBridge.start]，
+/// **先** [AndroidActivityBridge.moveTaskToBack] 回源，再 hold 分享已收到进度 ≥1s，然后 Vision。
+/// 直存期间返回键由 [AutoBillingService] 保活，不 finish。
 class ImageShareHandler {
   ImageShareHandler({
     required this.autoBilling,
@@ -44,7 +45,7 @@ class ImageShareHandler {
       }
     });
 
-    // 冷启动：原生可能已拷好文件但 invoke 早于 handler
+    // 冷启动：原生已拷好文件，pending 等此处取走（ADR-063，无固定 delay）
     try {
       final pending =
           await _channel.invokeMethod<dynamic>('getPendingSharedImages');
@@ -85,10 +86,10 @@ class ImageShareHandler {
     }
 
     final progressBody = didTruncate
-        ? '$kBillingImagesTruncatedHint，准备识别…'
-        : '准备识别…';
+        ? '已收到（$kBillingImagesTruncatedHint），准备识别…'
+        : '已收到，准备识别…';
 
-    // 先入队；FGS 须在 moveTaskToBack 前就绪，避免冷启动分享后 Dart 被挂起（ADR-054）。
+    // 始终 startForegroundService，不假设 Relay 已成功（ADR-063）。
     await ForegroundBillingBridge.start(
       title: '分享入账',
       body: progressBody,
@@ -99,7 +100,14 @@ class ImageShareHandler {
       autoBilling.setBatchNote(kBillingImagesTruncatedHint);
     }
 
-    final billing = Future.wait([
+    // 先回源再 hold：前台期间 FGS 文案常不可见；回源后栏里才算「看得到」。
+    await AndroidActivityBridge.moveTaskToBack();
+    // moveTaskToBack 返回早于 visibility=false（热启实测约 300ms）
+    await Future<void>.delayed(ShareEarlyProgressGate.backgroundSettle);
+    ShareEarlyProgressGate.markShown();
+    await ShareEarlyProgressGate.awaitMinDisplay();
+
+    await Future.wait([
       for (final path in list)
         autoBilling.processImagePath(
           path,
@@ -108,12 +116,5 @@ class ImageShareHandler {
           autoSave: true,
         ),
     ]);
-    logger.info(
-      'AutoBilling',
-      '分享入账送后台 n=${list.length}'
-      '${didTruncate ? ' truncated' : ''}，避免返回中断识别',
-    );
-    await AndroidActivityBridge.moveTaskToBack();
-    await billing;
   }
 }

@@ -6,9 +6,8 @@ import 'widget_view_style.dart';
 
 /// 收支速览 headless 视图：小 / 中（ADR-024 仿毛玻璃）。
 ///
-/// 中号：画布固定 [WidgetSpec.glanceMedium]（364×182），内容浮卡
-/// [WidgetSpec.glanceMediumContentHeight]（162），上下透明各 10；今日区与柱图
-/// 定高排布（今日行 46、柱图 76，距卡底 14），无动态撑开。
+/// 中号：渲图 [width]×[height] 跟槽（ADR-062）；上下透明与浮卡按总高
+/// `10:162:10`；卡内按浮卡比例；字号等取 `min(W/364, contentH/162)`。
 class GlanceView extends StatelessWidget {
   const GlanceView.medium({
     super.key,
@@ -195,14 +194,21 @@ class GlanceView extends StatelessWidget {
 
   Widget _buildMedium() {
     final textSecondary = widgetTextSecondary();
-    const contentH = WidgetSpec.glanceMediumContentHeight;
-    const pad = WidgetSpec.glanceMediumPad;
-    const todayH = WidgetSpec.glanceMediumTodayRowHeight;
-    const gap = WidgetSpec.glanceMediumTodayChartGap;
-    const chartH = WidgetSpec.glanceMediumChartHeight;
-    // 画布 182、浮卡 162 → 上下透明各 10。
-    final verticalPad =
-        ((height - contentH) / 2).clamp(0.0, height / 2);
+    final designH = WidgetSpec.mediumDesignHeight;
+    final designContent = WidgetSpec.glanceMediumContentHeight;
+    // 纵向：透明 / 浮卡 / 透明 = 10:162:10（相对整高）。
+    final contentH = height * (designContent / designH);
+    final verticalPad = ((height - contentH) / 2).clamp(0.0, height / 2);
+    final scale = (width / WidgetSpec.mediumDesignWidth)
+        .clamp(0.0, contentH / designContent);
+    // 卡内相对浮卡：14 / 46 / 12 / 76 / 14。
+    final pad = contentH * (WidgetSpec.glanceMediumPad / designContent);
+    final todayH =
+        contentH * (WidgetSpec.glanceMediumTodayRowHeight / designContent);
+    final gap =
+        contentH * (WidgetSpec.glanceMediumTodayChartGap / designContent);
+    final chartH =
+        contentH * (WidgetSpec.glanceMediumChartHeight / designContent);
     final days = last7Days.isEmpty
         ? List.generate(
             7,
@@ -214,6 +220,8 @@ class GlanceView extends StatelessWidget {
             ),
           )
         : last7Days;
+    final addSize = (40 * scale).clamp(0.0, todayH);
+    final gapH = 8 * scale;
 
     return Container(
       width: width,
@@ -225,9 +233,9 @@ class GlanceView extends StatelessWidget {
         height: contentH,
         decoration: BoxDecoration(
           color: widgetCardBackground(),
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(20 * scale),
         ),
-        padding: const EdgeInsets.all(pad),
+        padding: EdgeInsets.all(pad),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -242,43 +250,55 @@ class GlanceView extends StatelessWidget {
                       _money(todayExpense),
                       kWidgetChartExpense,
                       textSecondary,
+                      scale,
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  SizedBox(width: gapH),
                   Expanded(
                     child: _todayBlock(
                       todayIncomeLabel,
                       _money(todayIncome),
                       kWidgetChartIncome,
                       textSecondary,
+                      scale,
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  SizedBox(width: gapH),
                   Container(
-                    width: 40,
-                    height: 40,
+                    width: addSize,
+                    height: addSize,
                     decoration: BoxDecoration(
                       color: themeColor,
                       shape: BoxShape.circle,
                     ),
-                    child: const Icon(Icons.add, color: Colors.white, size: 22),
+                    child: Icon(
+                      Icons.add,
+                      color: Colors.white,
+                      size: 22 * scale,
+                    ),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: gap),
+            SizedBox(height: gap),
             SizedBox(
               height: chartH,
               width: double.infinity,
               child: Container(
-                padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+                padding: EdgeInsets.fromLTRB(
+                  10 * scale,
+                  8 * scale,
+                  10 * scale,
+                  4 * scale,
+                ),
                 decoration: BoxDecoration(
                   color: widgetInnerPanel(),
-                  borderRadius: BorderRadius.circular(14),
+                  borderRadius: BorderRadius.circular(14 * scale),
                 ),
                 child: _WeekChart(
                   days: days,
                   amountsHidden: amountsHidden,
+                  scale: scale,
                 ),
               ),
             ),
@@ -293,6 +313,7 @@ class GlanceView extends StatelessWidget {
     String value,
     Color dotColor,
     Color labelColor,
+    double scale,
   ) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -301,19 +322,19 @@ class GlanceView extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Container(
-              width: 7,
-              height: 7,
+              width: 7 * scale,
+              height: 7 * scale,
               decoration: BoxDecoration(
                 color: dotColor,
                 shape: BoxShape.circle,
               ),
             ),
-            const SizedBox(width: 5),
+            SizedBox(width: 5 * scale),
             Expanded(
               child: Text(
                 label,
                 style: TextStyle(
-                  fontSize: 12,
+                  fontSize: 12 * scale,
                   fontWeight: FontWeight.w500,
                   color: labelColor,
                   height: 1.0,
@@ -324,18 +345,18 @@ class GlanceView extends StatelessWidget {
             ),
           ],
         ),
-        const SizedBox(height: 6),
+        SizedBox(height: 6 * scale),
         FittedBox(
           fit: BoxFit.scaleDown,
           alignment: Alignment.centerLeft,
           child: Text(
             value,
-            style: const TextStyle(
-              fontSize: 22,
+            style: TextStyle(
+              fontSize: 22 * scale,
               fontWeight: FontWeight.w700,
               color: kWidgetExpense,
               height: 1.05,
-              fontFeatures: [kWidgetTabularFeature],
+              fontFeatures: const [kWidgetTabularFeature],
             ),
             maxLines: 1,
           ),
@@ -349,10 +370,12 @@ class _WeekChart extends StatelessWidget {
   const _WeekChart({
     required this.days,
     required this.amountsHidden,
+    required this.scale,
   });
 
   final List<GlanceDayPoint> days;
   final bool amountsHidden;
+  final double scale;
 
   @override
   Widget build(BuildContext context) {
@@ -375,13 +398,14 @@ class _WeekChart extends StatelessWidget {
                   for (final d in days)
                     Expanded(
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 2),
+                        padding: EdgeInsets.symmetric(horizontal: 2 * scale),
                         child: _DayBars(
                           expense: d.expense,
                           income: d.income,
                           maxVal: maxVal,
                           amountsHidden: amountsHidden,
                           trackHeight: trackH,
+                          scale: scale,
                         ),
                       ),
                     ),
@@ -390,7 +414,7 @@ class _WeekChart extends StatelessWidget {
             },
           ),
         ),
-        const SizedBox(height: 4),
+        SizedBox(height: 4 * scale),
         Row(
           children: [
             for (final d in days)
@@ -399,7 +423,7 @@ class _WeekChart extends StatelessWidget {
                   d.label,
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    fontSize: 9,
+                    fontSize: 9 * scale,
                     color: widgetTextSecondary(),
                     fontWeight: FontWeight.w500,
                   ),
@@ -421,6 +445,7 @@ class _DayBars extends StatelessWidget {
     required this.maxVal,
     required this.amountsHidden,
     required this.trackHeight,
+    required this.scale,
   });
 
   final double expense;
@@ -428,8 +453,7 @@ class _DayBars extends StatelessWidget {
   final double maxVal;
   final bool amountsHidden;
   final double trackHeight;
-
-  static const _barW = 5.0;
+  final double scale;
 
   @override
   Widget build(BuildContext context) {
@@ -443,13 +467,17 @@ class _DayBars extends StatelessWidget {
     );
   }
 
+  double get _barW => 5 * scale;
+  double get _gap => 2 * scale;
+  double get _minBar => 4 * scale;
+
   Widget _hiddenDots() {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
         _dot(kWidgetChartExpense),
-        const SizedBox(width: 2),
+        SizedBox(width: _gap),
         _dot(kWidgetChartIncome),
       ],
     );
@@ -464,7 +492,7 @@ class _DayBars extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           _rail(),
-          const SizedBox(width: 2),
+          SizedBox(width: _gap),
           _rail(),
         ],
       );
@@ -474,10 +502,10 @@ class _DayBars extends StatelessWidget {
       final h = (v / maxVal).clamp(0.0, 1.0) * trackHeight;
       return Container(
         width: _barW,
-        height: h < 4 && v > 0 ? 4 : h,
+        height: h < _minBar && v > 0 ? _minBar : h,
         decoration: BoxDecoration(
           color: c,
-          borderRadius: BorderRadius.circular(2),
+          borderRadius: BorderRadius.circular(2 * scale),
         ),
       );
     }
@@ -487,7 +515,7 @@ class _DayBars extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
         if (hasExpense) bar(expense, kWidgetChartExpense),
-        if (hasExpense && hasIncome) const SizedBox(width: 2),
+        if (hasExpense && hasIncome) SizedBox(width: _gap),
         if (hasIncome) bar(income, kWidgetChartIncome),
       ],
     );
@@ -499,15 +527,15 @@ class _DayBars extends StatelessWidget {
       height: trackHeight,
       decoration: BoxDecoration(
         color: widgetTextTertiary().withValues(alpha: 0.22),
-        borderRadius: BorderRadius.circular(2),
+        borderRadius: BorderRadius.circular(2 * scale),
       ),
     );
   }
 
   Widget _dot(Color c) {
     return Container(
-      width: 4,
-      height: 4,
+      width: 4 * scale,
+      height: 4 * scale,
       decoration: BoxDecoration(
         color: c.withValues(alpha: 0.45),
         shape: BoxShape.circle,

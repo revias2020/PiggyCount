@@ -359,9 +359,17 @@ class AutoBillingService {
     );
   }
 
-  /// 预览删除且无后继：清早期进度。
+  /// 预览删除无后继 / 总时限 / 门闩丢原且补扫失败：清进度并结果通知（ADR-064）。
   Future<void> cancelScreenshotProgress(String imagePath) async {
+    if (_superseded.contains(imagePath)) {
+      await notifications.cancelProgress();
+      return;
+    }
     _superseded.add(imagePath);
+    if (_superseded.length > 40) {
+      final drop = _superseded.take(20).toList();
+      _superseded.removeAll(drop);
+    }
     if (_awaitingScreenshotPath == imagePath) {
       _awaitingScreenshotPath = null;
     }
@@ -369,7 +377,11 @@ class AutoBillingService {
       'AutoBilling',
       '截图取消 file=${p.basename(imagePath)}',
     );
-    await notifications.cancelProgress();
+    await notifications.showResult(
+      title: '截图已取消，未入账',
+      body: '编辑超时或原图已删除',
+      success: false,
+    );
   }
 
   /// 处理本地图片路径；成功返回交易 id 列表。

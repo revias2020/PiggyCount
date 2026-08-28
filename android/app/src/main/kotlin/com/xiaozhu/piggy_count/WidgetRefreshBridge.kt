@@ -7,7 +7,7 @@ import android.util.Log
 /**
  * 小组件 → Flutter 进程内刷新。
  *
- * 中号渲图画布已固定（364×182），不再写入槽位 dp。
+ * 中号槽位 W×H 由 [WidgetSlotSize] 写入 prefs；尺寸变化时请求重渲（ADR-062）。
  * 进程仍在时发广播，由 [MainActivity] 转 MethodChannel。
  */
 object WidgetRefreshBridge {
