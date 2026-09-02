@@ -1,8 +1,9 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// 语音识别引擎选择（ADR-052）。
+/// 语音识别引擎选择（ADR-052 / ADR-067）。
 enum SpeechRecognitionEngineKind {
-  system,
+  /// 未启用：不听写、不直接记账（ADR-067）。
+  disabled,
   vosk,
   whisper,
   aiVoice,
@@ -10,28 +11,32 @@ enum SpeechRecognitionEngineKind {
 
 extension SpeechRecognitionEngineKindCodec on SpeechRecognitionEngineKind {
   String get wire => switch (this) {
-        SpeechRecognitionEngineKind.system => 'system',
+        SpeechRecognitionEngineKind.disabled => 'disabled',
         SpeechRecognitionEngineKind.vosk => 'vosk',
         SpeechRecognitionEngineKind.whisper => 'whisper',
         SpeechRecognitionEngineKind.aiVoice => 'ai_voice',
       };
 
   String get label => switch (this) {
-        SpeechRecognitionEngineKind.system => '系统 ASR',
+        SpeechRecognitionEngineKind.disabled => '未启用',
         SpeechRecognitionEngineKind.vosk => 'Vosk（离线）',
         SpeechRecognitionEngineKind.whisper => 'Whisper（离线）',
         SpeechRecognitionEngineKind.aiVoice => 'AI 语音模型',
       };
 
   /// 是否只做听写（再走文本结构化）。
-  bool get isDictation => this != SpeechRecognitionEngineKind.aiVoice;
+  bool get isDictation =>
+      this == SpeechRecognitionEngineKind.vosk ||
+      this == SpeechRecognitionEngineKind.whisper;
 
   static SpeechRecognitionEngineKind parse(String? raw) {
     return switch (raw) {
       'vosk' => SpeechRecognitionEngineKind.vosk,
       'whisper' => SpeechRecognitionEngineKind.whisper,
       'ai_voice' => SpeechRecognitionEngineKind.aiVoice,
-      _ => SpeechRecognitionEngineKind.system,
+      // 旧 wire `system` 与缺省均视为未启用（ADR-067）。
+      'disabled' || 'system' || null => SpeechRecognitionEngineKind.disabled,
+      _ => SpeechRecognitionEngineKind.disabled,
     };
   }
 }

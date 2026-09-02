@@ -294,9 +294,7 @@ class _SpeechRecognitionSectionState
   @override
   Widget build(BuildContext context) {
     final engineAsync = ref.watch(speechEngineKindProvider);
-    final systemAsync = ref.watch(systemAsrAvailableProvider);
     final current = engineAsync.valueOrNull;
-    final systemOk = systemAsync.valueOrNull ?? false;
 
     return aiSectionCard(
       child: Column(
@@ -337,13 +335,9 @@ class _SpeechRecognitionSectionState
             ),
             children: [
               _EngineTile(
-                title: SpeechRecognitionEngineKind.system.label,
-                selected: current == SpeechRecognitionEngineKind.system,
-                enabled: systemOk,
-                subtitle: systemOk ? null : '本机不可用',
-                onTap: systemOk
-                    ? () => _saveEngine(SpeechRecognitionEngineKind.system)
-                    : null,
+                title: SpeechRecognitionEngineKind.disabled.label,
+                selected: current == SpeechRecognitionEngineKind.disabled,
+                onTap: () => _saveEngine(SpeechRecognitionEngineKind.disabled),
               ),
               _EngineTile(
                 title: SpeechRecognitionEngineKind.vosk.label,
@@ -384,23 +378,21 @@ class _EngineTile extends StatelessWidget {
     required this.selected,
     required this.onTap,
     this.subtitle,
-    this.enabled = true,
   });
 
   final String title;
   final bool selected;
   final String? subtitle;
   final VoidCallback? onTap;
-  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
     final radius = BorderRadius.circular(PigTokens.radiusCard - 4);
-    final tile = Material(
+    return Material(
       color: selected ? PigTokens.primarySoft : PigTokens.surfaceSecondary,
       borderRadius: radius,
       child: InkWell(
-        onTap: enabled ? onTap : null,
+        onTap: onTap,
         borderRadius: radius,
         child: Padding(
           padding: const EdgeInsets.symmetric(
@@ -418,11 +410,10 @@ class _EngineTile extends StatelessWidget {
                       title,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
+                      style: const TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
                         height: 1.2,
-                        color: enabled ? null : PigTokens.textTertiary,
                       ),
                     ),
                   ),
@@ -451,8 +442,6 @@ class _EngineTile extends StatelessWidget {
         ),
       ),
     );
-    if (enabled) return tile;
-    return Opacity(opacity: 0.45, child: tile);
   }
 }
 

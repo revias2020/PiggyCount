@@ -8,8 +8,10 @@ import '../../providers/transaction_providers.dart';
 import '../../services/automation/pending_review_store.dart';
 import '../../styles/tokens.dart';
 import '../../utils/app_permissions.dart';
+import '../../utils/details_month_bounds.dart';
 import '../../utils/money_format.dart';
 import '../../widgets/details/details_header.dart';
+import '../../widgets/details/details_month_swipe_area.dart';
 import '../../widgets/details/pending_review_sheet.dart';
 import '../../widgets/empty_state.dart';
 import '../../widgets/page_status.dart';
@@ -41,6 +43,27 @@ class _DetailsPageState extends ConsumerState<DetailsPage> {
 
   GlobalKey _keyFor(String syncId) =>
       _rowKeys.putIfAbsent(syncId, GlobalKey.new);
+
+  void _scrollListToTop() {
+    if (_scrollController.hasClients) {
+      _scrollController.jumpTo(0);
+    }
+  }
+
+  void _setBrowseMonth(DateTime month, {bool scrollToTop = false}) {
+    ref.read(detailsMonthProvider.notifier).state =
+        DateTime(month.year, month.month);
+    if (scrollToTop) _scrollListToTop();
+  }
+
+  void _shiftBrowseMonth(int delta) {
+    final next = DetailsMonthBounds.shiftMonth(
+      ref.read(detailsMonthProvider),
+      delta,
+    );
+    if (next == null) return;
+    _setBrowseMonth(next, scrollToTop: true);
+  }
 
   Future<void> _handleJump(String syncId) async {
     final entries = ref.read(pendingReviewProvider).entries;
@@ -137,14 +160,13 @@ class _DetailsPageState extends ConsumerState<DetailsPage> {
               month: month,
               income: asyncLedger.valueOrNull?.monthIncome ?? 0,
               expense: asyncLedger.valueOrNull?.monthExpense ?? 0,
-              onMonthChanged: (m) {
-                ref.read(detailsMonthProvider.notifier).state =
-                    DateTime(m.year, m.month);
-              },
+              onMonthChanged: (m) => _setBrowseMonth(m, scrollToTop: true),
             ),
             const Divider(height: 1),
             Expanded(
-              child: asyncLedger.when(
+              child: DetailsMonthSwipeArea(
+                onMonthDelta: _shiftBrowseMonth,
+                child: asyncLedger.when(
                 loading: () => const AppLoading(message: '加载账单…'),
                 error: (e, _) => AppErrorState(
                   message: '加载失败，请稍后重试',
@@ -181,6 +203,7 @@ class _DetailsPageState extends ConsumerState<DetailsPage> {
                     },
                   );
                 },
+                ),
               ),
             ),
           ],

@@ -14,8 +14,9 @@ class ForegroundBillingBridge {
 
   static bool get isActive => _active;
 
-  /// 始终走 [startBillingForeground]（`startForegroundService`），即便 ShareRelay 已起 FGS。
-  /// 禁止仅凭假设将 [_active] 置真后只 update——update 用 `startService`，FGS 未真跑时会丢早期通知。
+  /// 起或刷新进度通知。原生 start/update 先同 id 直发再
+  /// `startForegroundService` + `startForeground`（ADR-066 / 069）；即便 ShareRelay
+  /// 已起 FGS，Dart 仍须再调一次以对齐 [_active]（ADR-063）。
   static Future<void> start({
     required String title,
     required String body,
@@ -35,24 +36,12 @@ class ForegroundBillingBridge {
     }
   }
 
+  /// 与 [start] 同实现；保留方法名方便调用方区分语义（首启 vs 改文案）。
   static Future<void> update({
     required String title,
     required String body,
-  }) async {
-    if (!Platform.isAndroid) return;
-    try {
-      await _channel.invokeMethod<void>('updateBillingForeground', {
-        'title': title,
-        'body': body,
-      });
-      _active = true;
-    } catch (e) {
-      logger.warning(
-        'AutoBilling',
-        'FGS update failed title=$title body=$body err=$e',
-      );
-    }
-  }
+  }) =>
+      start(title: title, body: body);
 
   static Future<void> stop() async {
     if (!Platform.isAndroid) return;

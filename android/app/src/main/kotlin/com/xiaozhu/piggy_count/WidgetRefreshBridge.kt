@@ -31,7 +31,6 @@ object WidgetRefreshBridge {
      */
     fun requestFlutterRefresh(context: Context) {
         if (wasPrivacyToggledRecently(context)) {
-            Log.i(TAG, "skip Flutter refresh: recent privacy toggle")
             return
         }
         try {

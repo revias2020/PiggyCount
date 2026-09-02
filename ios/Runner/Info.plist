@@ -69,9 +69,7 @@
 			<string>UIInterfaceOrientationLandscapeRight</string>
 		</array>
 		<key>NSMicrophoneUsageDescription</key>
-		<string>用于语音记账，将语音转为文字后再识别账单</string>
-		<key>NSSpeechRecognitionUsageDescription</key>
-		<string>用于语音记账的系统语音识别</string>
+		<string>用于语音记账录音，再交由所选识别引擎处理</string>
 		<key>NSCameraUsageDescription</key>
 		<string>用于拍照识别账单并智能记账</string>
 		<key>NSPhotoLibraryUsageDescription</key>

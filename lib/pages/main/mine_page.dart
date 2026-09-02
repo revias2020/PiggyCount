@@ -15,6 +15,7 @@ import '../settings/about_page.dart';
 import '../settings/cloud_sync_page.dart' show CloudSyncPage;
 import '../settings/data_manage_page.dart';
 import '../settings/ios_screenshot_guide_page.dart';
+import '../settings/screenshot_watch_dirs_page.dart';
 import '../settings/sync_page.dart';
 import '../settings/widget_management_page.dart';
 import '../tag/tag_manage_page.dart';
@@ -30,6 +31,9 @@ class MinePage extends ConsumerWidget {
     final autoTags = ref.watch(autoGenerateTagsProvider).valueOrNull ?? true;
     final screenshot =
         ref.watch(screenshotAutoBillingProvider).valueOrNull ?? false;
+    final watchDirs =
+        ref.watch(screenshotWatchDirectoriesProvider).valueOrNull ??
+            const <String>[];
     final aiSubtitle =
         ref.watch(aiMineSubtitleProvider).valueOrNull ?? '服务商与能力绑定';
     final cloudCfg = ref.watch(cloudSyncConfigProvider).valueOrNull;
@@ -146,9 +150,27 @@ class MinePage extends ConsumerWidget {
               onChanged: (v) async {
                 final settings = ref.read(settingsRepositoryProvider);
                 if (v) {
+                  var openWatchDirsAfterDiscover = false;
                   if (Platform.isAndroid) {
                     try {
-                      await ref.read(screenshotMonitorServiceProvider).start();
+                      final monitor =
+                          ref.read(screenshotMonitorServiceProvider);
+                      await monitor.ensurePermissionOrThrow();
+                      final configured = await settings
+                          .hasScreenshotWatchDirectoriesSetting();
+                      late final List<String> dirs;
+                      if (!configured) {
+                        dirs = await monitor.discoverDirectories();
+                        await settings.setScreenshotWatchDirectories(dirs);
+                        openWatchDirsAfterDiscover = true;
+                      } else {
+                        dirs = await settings.screenshotWatchDirectories();
+                      }
+                      if (dirs.isNotEmpty) {
+                        await monitor.start(directories: dirs);
+                      } else {
+                        await monitor.stop();
+                      }
                     } catch (e) {
                       if (!context.mounted) return;
                       final msg = '$e';
@@ -168,7 +190,14 @@ class MinePage extends ConsumerWidget {
                     }
                   }
                   await settings.setScreenshotAutoBilling(true);
-                  if (Platform.isIOS && context.mounted) {
+                  if (!context.mounted) return;
+                  if (Platform.isAndroid && openWatchDirsAfterDiscover) {
+                    await Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const ScreenshotWatchDirsPage(),
+                      ),
+                    );
+                  } else if (Platform.isIOS) {
                     Navigator.of(context).push(
                       MaterialPageRoute<void>(
                         builder: (_) => const IosScreenshotGuidePage(),
@@ -183,6 +212,25 @@ class MinePage extends ConsumerWidget {
                 }
               },
             ),
+            if (Platform.isAndroid && screenshot) ...[
+              const _SectionDivider(),
+              _MineTile(
+                icon: Icons.folder_outlined,
+                title: '自动记账监听目录',
+                subtitle: watchDirs.isEmpty
+                    ? '不可用，未配置监听目录'
+                    : '${watchDirs.length} 个目录',
+                subtitleColor:
+                    watchDirs.isEmpty ? PigTokens.danger : null,
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const ScreenshotWatchDirsPage(),
+                    ),
+                  );
+                },
+              ),
+            ],
             if (Platform.isIOS) ...[
               const _SectionDivider(),
               _MineTile(
@@ -298,12 +346,14 @@ class _MineTile extends StatelessWidget {
     required this.title,
     required this.onTap,
     this.subtitle,
+    this.subtitleColor,
     this.enabled = true,
   });
 
   final IconData icon;
   final String title;
   final String? subtitle;
+  final Color? subtitleColor;
   final VoidCallback? onTap;
   final bool enabled;
 
@@ -328,10 +378,10 @@ class _MineTile extends StatelessWidget {
           ? null
           : Text(
               subtitle!,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 12,
                 height: 1.15,
-                color: PigTokens.textTertiary,
+                color: subtitleColor ?? PigTokens.textTertiary,
               ),
             ),
       trailing: const Icon(Icons.chevron_right, color: PigTokens.textTertiary),

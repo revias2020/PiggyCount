@@ -15,52 +15,57 @@ import 'billing_notification_service.dart';
 import 'pending_billing_retry_store.dart';
 import 'vision_image_prep.dart';
 
-/// 批次内账单分桶 + 整图未入账（ADR-056）。
+/// 批次内分桶：入账/跳过按笔；失败/阻塞按张。
 class _BatchTallies {
   int success = 0;
   int skip = 0;
-  int fail = 0;
   double successAmount = 0;
-  final List<({String title, String body})> imagesUnsaved = [];
+  int blocked = 0;
+  /// 失败张原因（Dialog 换行合并）；length = 失败张数。
+  final List<String> failureReasons = [];
+
+  int get failImages => failureReasons.length;
 
   bool get isEmpty =>
-      success == 0 && skip == 0 && fail == 0 && imagesUnsaved.isEmpty;
+      success == 0 &&
+      skip == 0 &&
+      failureReasons.isEmpty &&
+      blocked == 0;
+
+  void clear() {
+    success = 0;
+    skip = 0;
+    successAmount = 0;
+    blocked = 0;
+    failureReasons.clear();
+  }
 }
 
-/// 结果正文（单张 / 合并共用；供测试）。
+/// 结果正文：省略为 0 的段；阻塞句见纯阻塞 / 「另有」。
 String formatAutoBillingResultBody({
   required int success,
   required int skip,
-  required int fail,
-  required int imagesUnsaved,
+  required int failImages,
+  required int blocked,
   double? successAmount,
-  String? singleUnsavedBody,
   String? batchNote,
 }) {
-  final hasBills = success > 0 || skip > 0 || fail > 0;
+  final parts = <String>[];
+  if (success > 0) {
+    final amount = successAmount ?? 0;
+    parts.add('入账 $success 笔（¥${amount.toStringAsFixed(2)}）');
+  }
+  if (skip > 0) parts.add('跳过 $skip 笔');
+  if (failImages > 0) parts.add('失败 $failImages 张');
+  final main = parts.join('，');
   String body;
-  if (!hasBills) {
-    if (imagesUnsaved == 1 &&
-        singleUnsavedBody != null &&
-        singleUnsavedBody.isNotEmpty) {
-      body = singleUnsavedBody;
-    } else if (imagesUnsaved > 0) {
-      body = '另有 $imagesUnsaved 张未入账';
-    } else {
-      body = '';
-    }
+  if (blocked > 0) {
+    final blockClause = main.isEmpty
+        ? '$blocked 张阻塞，打开 App 后继续'
+        : '另有 $blocked 张阻塞，打开 App 后继续';
+    body = main.isEmpty ? blockClause : '$main；$blockClause';
   } else {
-    final parts = <String>[];
-    if (success > 0 && skip == 0 && fail == 0 && imagesUnsaved == 0) {
-      final amount = successAmount ?? 0;
-      parts.add('已入账 $success 笔，合计 ¥${amount.toStringAsFixed(2)}');
-    } else {
-      parts.add('成功 $success 笔，跳过 $skip 笔，失败 $fail 笔');
-      if (imagesUnsaved > 0) {
-        parts.add('另有 $imagesUnsaved 张未入账');
-      }
-    }
-    body = parts.join('，');
+    body = main;
   }
   final note = batchNote?.trim();
   if (note == null || note.isEmpty) return body;
@@ -68,33 +73,11 @@ String formatAutoBillingResultBody({
   return '$body（$note）';
 }
 
-/// 结果标题（供测试）。
-String formatAutoBillingResultTitle({
-  required int success,
-  required int skip,
-  required int fail,
-  required int imagesUnsaved,
-  String? singleUnsavedTitle,
-}) {
-  final hasBills = success > 0 || skip > 0 || fail > 0;
-  if (!hasBills &&
-      imagesUnsaved == 1 &&
-      singleUnsavedTitle != null &&
-      singleUnsavedTitle.isNotEmpty) {
-    return singleUnsavedTitle;
-  }
-  if (success > 0 && fail == 0) return '自动记账成功';
-  if (success == 0 &&
-      fail == 0 &&
-      skip > 0 &&
-      imagesUnsaved == 0) {
-    return '记账取消';
-  }
-  return '自动记账完成';
-}
+/// 结果标题固定「识别结果」（截图取消除外）。
+String formatAutoBillingResultTitle() => '识别结果';
 
-/// 点击是否走成功路径（ADR-056 / F2）。
-bool autoBillingResultClickSuccess(int successCount) => successCount > 0;
+/// 无失败张 → success payload（进明细，可跳笔）；有失败张 → Dialog。
+bool autoBillingResultClickSuccess(int failImages) => failImages == 0;
 
 /// 截图/分享图片 → Vision 提取 → 自动落库（后台通知渠道，ADR-018）。
 class AutoBillingService {
@@ -156,11 +139,13 @@ class AutoBillingService {
     required String title,
     required String body,
   }) async {
+    final t = _retryDrainRunning ? '识别继续' : title;
+    final b = _retryDrainRunning ? '继续调用AI分析' : body;
     if (ForegroundBillingBridge.isActive) {
-      await ForegroundBillingBridge.update(title: title, body: body);
+      await ForegroundBillingBridge.update(title: t, body: b);
       return;
     }
-    await notifications.showProgress(title: title, body: body);
+    await notifications.showProgress(title: t, body: b);
   }
 
   Future<void> _cancelProgress() async {
@@ -172,8 +157,8 @@ class AutoBillingService {
     if (!Platform.isAndroid) return;
     if (ForegroundBillingBridge.isActive) return;
     await ForegroundBillingBridge.start(
-      title: '智能记账',
-      body: '准备识别…',
+      title: _retryDrainRunning ? '识别继续' : '智能记账',
+      body: _retryDrainRunning ? '继续调用AI分析' : '准备识别…',
     );
   }
 
@@ -197,18 +182,15 @@ class AutoBillingService {
     );
     logger.info(
       'AutoBilling',
-      '传输失败已入待重试队列 source=$source file=${p.basename(imagePath)}',
+      '传输失败已入阻塞队列 source=$source file=${p.basename(imagePath)}',
     );
     if (showNotification) {
-      await _showProgress(
-        title: '待继续识别',
-        body: '打开 App 后将自动重试',
-      );
+      _batchTallies.blocked++;
     }
     return true;
   }
 
-  /// App 回前台时重试后台直存传输失败项（ADR-054）。
+  /// App 回前台时重试后台直存阻塞项（ADR-054）。
   Future<void> retryPendingOnResume() async {
     if (_retryDrainRunning) return;
     _retryDrainRunning = true;
@@ -216,6 +198,7 @@ class AutoBillingService {
       final items = await _retryStore.load();
       if (items.isEmpty) return;
       logger.info('AutoBilling', '回前台重试 ${items.length} 项');
+      await _showProgress(title: '识别继续', body: '继续调用AI分析');
       for (final item in items) {
         if (!await File(item.imagePath).exists()) {
           await _retryStore.remove(item.imagePath);
@@ -263,34 +246,35 @@ class AutoBillingService {
   void _recordBillTallies({
     required int success,
     required int skip,
-    required int fail,
     double successAmount = 0,
   }) {
     _batchTallies.success += success;
     _batchTallies.skip += skip;
-    _batchTallies.fail += fail;
     _batchTallies.successAmount += successAmount;
   }
 
-  void _recordImageUnsaved({required String title, required String body}) {
-    _batchTallies.imagesUnsaved.add((title: title, body: body));
+  void _recordFailedImage({required String title, required String body}) {
+    final t = title.trim();
+    final b = body.trim();
+    if (t.isEmpty) {
+      _batchTallies.failureReasons.add(b.isEmpty ? '识别失败' : b);
+    } else if (b.isEmpty || b == t) {
+      _batchTallies.failureReasons.add(t);
+    } else {
+      _batchTallies.failureReasons.add('$t：$b');
+    }
   }
 
   Future<void> _flushBatchResults() async {
     final t = _BatchTallies()
       ..success = _batchTallies.success
       ..skip = _batchTallies.skip
-      ..fail = _batchTallies.fail
       ..successAmount = _batchTallies.successAmount
-      ..imagesUnsaved.addAll(_batchTallies.imagesUnsaved);
+      ..blocked = _batchTallies.blocked
+      ..failureReasons.addAll(_batchTallies.failureReasons);
     final batchNote = _pendingBatchNote;
     _pendingBatchNote = null;
-    _batchTallies
-      ..success = 0
-      ..skip = 0
-      ..fail = 0
-      ..successAmount = 0
-      ..imagesUnsaved.clear();
+    _batchTallies.clear();
 
     if (t.isEmpty) {
       if (_inflightPath == null && _awaitingScreenshotPath == null) {
@@ -299,39 +283,32 @@ class AutoBillingService {
       return;
     }
 
-    final unsaved = t.imagesUnsaved;
-    final singleUnsaved = unsaved.length == 1 ? unsaved.first : null;
     final body = formatAutoBillingResultBody(
       success: t.success,
       skip: t.skip,
-      fail: t.fail,
-      imagesUnsaved: unsaved.length,
+      failImages: t.failImages,
+      blocked: t.blocked,
       successAmount: t.successAmount,
-      singleUnsavedBody: singleUnsaved?.body,
       batchNote: batchNote,
     );
-    final title = formatAutoBillingResultTitle(
-      success: t.success,
-      skip: t.skip,
-      fail: t.fail,
-      imagesUnsaved: unsaved.length,
-      singleUnsavedTitle: singleUnsaved?.title,
-    );
+    final title = formatAutoBillingResultTitle();
+    final opensDetails = autoBillingResultClickSuccess(t.failImages);
     await notifications.showResult(
       title: title,
       body: body,
-      success: autoBillingResultClickSuccess(t.success),
+      success: opensDetails,
     );
+    if (!opensDetails) {
+      notifications.lastFailureTitle = title;
+      notifications.lastFailureBody = t.failureReasons.join('\n');
+    }
   }
 
-  /// 稳定期满、关联窗未到：早期进度（不 Vision / 不落库）。
+  /// 检出即早期进度（关联窗未满；不 Vision / 不落库）。
+  /// 原生已先起 FGS；此处再 [ForegroundBillingBridge.start] 对齐 [_active]（同 ADR-063 分享）。
   Future<void> showScreenshotEarlyProgress(String imagePath) async {
     if (_superseded.contains(imagePath)) return;
-    logger.info(
-      'AutoBilling',
-      '早期进度 source=screenshot file=${p.basename(imagePath)}',
-    );
-    await notifications.showProgress(
+    await ForegroundBillingBridge.start(
       title: '检测到截图',
       body: '等待确认后识别…',
     );
@@ -348,21 +325,20 @@ class AutoBillingService {
       _superseded.removeAll(drop);
     }
     _awaitingScreenshotPath = newPath;
-    logger.info(
-      'AutoBilling',
-      '截图替换 old=${p.basename(oldPath)} '
-      'new=${newPath == null || newPath.isEmpty ? "-" : p.basename(newPath)}',
-    );
-    await notifications.showProgress(
+    await _showProgress(
       title: '截图已更新',
       body: '改用编辑后的图片识别…',
     );
   }
 
-  /// 预览删除无后继 / 总时限 / 门闩丢原且补扫失败：清进度并结果通知（ADR-064）。
+  /// 预览删除且删原短等无后继 / 门闩丢原：清进度并结果通知（ADR-068）。
   Future<void> cancelScreenshotProgress(String imagePath) async {
     if (_superseded.contains(imagePath)) {
-      await notifications.cancelProgress();
+      if (ForegroundBillingBridge.isActive) {
+        await ForegroundBillingBridge.stop();
+      } else {
+        await notifications.cancelProgress();
+      }
       return;
     }
     _superseded.add(imagePath);
@@ -373,10 +349,9 @@ class AutoBillingService {
     if (_awaitingScreenshotPath == imagePath) {
       _awaitingScreenshotPath = null;
     }
-    logger.info(
-      'AutoBilling',
-      '截图取消 file=${p.basename(imagePath)}',
-    );
+    if (ForegroundBillingBridge.isActive) {
+      await ForegroundBillingBridge.stop();
+    }
     await notifications.showResult(
       title: '截图已取消，未入账',
       body: '编辑超时或原图已删除',
@@ -422,12 +397,7 @@ class AutoBillingService {
           try {
             await _flushBatchResults();
           } catch (_) {
-            _batchTallies
-              ..success = 0
-              ..skip = 0
-              ..fail = 0
-              ..successAmount = 0
-              ..imagesUnsaved.clear();
+            _batchTallies.clear();
           }
           await AndroidActivityBridge.setRetainOnBack(false);
         }
@@ -446,10 +416,6 @@ class AutoBillingService {
     // 已处理 / 短窗去重：静默跳过，不打点（ADR-022）
     if (_processed.contains(imagePath)) return const [];
     if (_superseded.contains(imagePath)) {
-      logger.info(
-        'AutoBilling',
-        '已替换跳过 source=$source file=${p.basename(imagePath)}',
-      );
       return const [];
     }
 
@@ -461,13 +427,12 @@ class AutoBillingService {
     _lastTime = now;
 
     final fileName = p.basename(imagePath);
-    logger.info('AutoBilling', '触发 source=$source file=$fileName');
 
     final fallbackProviders = await _providerStore.listVisionFallbackProviders();
     if (fallbackProviders.isEmpty) {
       logger.warning('AutoBilling', '能力未就绪 source=$source');
       if (showNotification) {
-        _recordImageUnsaved(
+        _recordFailedImage(
           title: '无法自动记账',
           body: '未绑定已测通的视觉服务商，请到「我的 → AI 设置」配置',
         );
@@ -484,25 +449,18 @@ class AutoBillingService {
 
       final ready = await _waitFile(file);
       if (_superseded.contains(imagePath)) {
-        logger.info('AutoBilling', '等待文件时被替换 file=$fileName');
         return const [];
       }
       if (!ready) {
         logger.warning('AutoBilling', '文件不可读 source=$source file=$fileName');
         if (showNotification) {
-          _recordImageUnsaved(
+          _recordFailedImage(
             title: '文件不可用',
             body: '截图尚未可读，请稍后通过记一笔扇形「图片」重试。',
           );
         }
         return const [];
       }
-
-      logger.info(
-        'AutoBilling',
-        '开始识别 source=$source providers=${fallbackProviders.length} '
-        'primary=${fallbackProviders.first.name}',
-      );
 
       if (showNotification) {
         await _showProgress(title: '正在识别', body: 'AI 分析账单中…');
@@ -511,7 +469,6 @@ class AutoBillingService {
       try {
         final rawBytes = await file.readAsBytes();
         if (_superseded.contains(imagePath)) {
-          logger.info('AutoBilling', '读图后被替换，放弃 file=$fileName');
           return const [];
         }
         final mime = imagePath.toLowerCase().endsWith('.png')
@@ -521,20 +478,11 @@ class AutoBillingService {
           rawBytes,
           mimeType: mime,
         );
-        if (prepared.bytes.length != rawBytes.length ||
-            prepared.mimeType != mime) {
-          logger.info(
-            'AutoBilling',
-            '图片已压缩 source=$source '
-            '${rawBytes.length}→${prepared.bytes.length} bytes',
-          );
-        }
         final bills = await bookkeeper.fromImageWithFallback(
           prepared.bytes,
           mimeType: prepared.mimeType,
         );
         if (_superseded.contains(imagePath)) {
-          logger.info('AutoBilling', '识别中被替换，放弃落库 file=$fileName');
           return const [];
         }
         await _mark(imagePath);
@@ -542,7 +490,7 @@ class AutoBillingService {
         if (bills.isEmpty) {
           logger.warning('AutoBilling', '非账单 source=$source file=$fileName');
           if (showNotification) {
-            _recordImageUnsaved(
+            _recordFailedImage(
               title: '未识别到账单',
               body: '该图可能不是支付截图',
             );
@@ -559,17 +507,15 @@ class AutoBillingService {
         if (ledgerId == null) {
           logger.error('AutoBilling', '未找到账本 source=$source');
           if (showNotification) {
-            _recordBillTallies(
-              success: 0,
-              skip: 0,
-              fail: bills.length,
+            _recordFailedImage(
+              title: '无法自动记账',
+              body: '未找到账本',
             );
           }
           return const [];
         }
 
         if (_superseded.contains(imagePath)) {
-          logger.info('AutoBilling', '落库前被替换，放弃 file=$fileName');
           return const [];
         }
 
@@ -586,11 +532,6 @@ class AutoBillingService {
             'skip=${saved.skipped} fail=${saved.failed}',
           );
         } else {
-          logger.info(
-            'AutoBilling',
-            '自动入账 ${saved.ids.length} 笔 source=$source '
-            'skip=${saved.skipped} fail=${saved.failed}',
-          );
           try {
             await onAutoSaved?.call(saved.ids, source, ledgerId);
           } catch (e, st) {
@@ -602,9 +543,14 @@ class AutoBillingService {
           _recordBillTallies(
             success: saved.ids.length,
             skip: saved.skipped,
-            fail: saved.failed,
             successAmount: saved.savedAmount,
           );
+          if (saved.failed > 0) {
+            _recordFailedImage(
+              title: '落库失败',
+              body: '有 ${saved.failed} 笔未能保存',
+            );
+          }
         }
         return saved.ids;
       } on AiVisionExhaustedException catch (e, st) {
@@ -624,7 +570,7 @@ class AutoBillingService {
           st,
         );
         if (showNotification) {
-          _recordImageUnsaved(
+          _recordFailedImage(
             title: e.notificationTitle,
             body: e.notificationBody(),
           );
@@ -656,9 +602,9 @@ class AutoBillingService {
         if (showNotification) {
           if (isDuplicate) {
             // 理论上 saveBills 已分桶；外层仍见撞车则记 1 跳过
-            _recordBillTallies(success: 0, skip: 1, fail: 0);
+            _recordBillTallies(success: 0, skip: 1);
           } else {
-            _recordImageUnsaved(title: failTitle, body: msg);
+            _recordFailedImage(title: failTitle, body: msg);
           }
         }
         return const [];

@@ -79,7 +79,8 @@ class GlanceView extends StatelessWidget {
   Widget _buildSmall() {
     final textSecondary = widgetTextSecondary();
     final pad = width < 130 ? 10.0 : 12.0;
-    // 顶行圆点+「今日支出」；金额约 20（点金额=隐私）；本月两列均分无竖线；底栏标签 8。
+    // 顶行圆点+「今日支出」；金额约 20、w500，¥ 半高基线齐（点金额=隐私）；
+    // 本月两列均分无竖线；底栏标签 8、金额 11 同规。
     return Container(
       width: width,
       height: height,
@@ -121,16 +122,11 @@ class GlanceView extends StatelessWidget {
           FittedBox(
             fit: BoxFit.scaleDown,
             alignment: Alignment.centerLeft,
-            child: Text(
-              _money(todayExpense),
-              maxLines: 1,
-              style: const TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: kWidgetExpense,
-                height: 1.0,
-                fontFeatures: [kWidgetTabularFeature],
-              ),
+            child: _amountWithYen(
+              value: _money(todayExpense),
+              fontSize: 20,
+              color: kWidgetExpense,
+              height: 1.0,
             ),
           ),
           const Spacer(),
@@ -160,6 +156,48 @@ class GlanceView extends StatelessWidget {
     );
   }
 
+  /// 小号金额：`¥` 为数字一半字号并基线对齐；无 `¥`（如隐私 `****`）整串同号。
+  Widget _amountWithYen({
+    required String value,
+    required double fontSize,
+    required Color color,
+    double? height,
+    TextOverflow overflow = TextOverflow.visible,
+  }) {
+    const yen = '¥';
+    final base = TextStyle(
+      color: color,
+      fontWeight: FontWeight.w500,
+      height: height,
+      fontFeatures: const [kWidgetTabularFeature],
+    );
+    if (!value.startsWith(yen)) {
+      return Text(
+        value,
+        maxLines: 1,
+        overflow: overflow,
+        style: base.copyWith(fontSize: fontSize),
+      );
+    }
+    return Text.rich(
+      TextSpan(
+        style: base,
+        children: [
+          TextSpan(
+            text: yen,
+            style: TextStyle(fontSize: fontSize / 2),
+          ),
+          TextSpan(
+            text: value.substring(yen.length),
+            style: TextStyle(fontSize: fontSize),
+          ),
+        ],
+      ),
+      maxLines: 1,
+      overflow: overflow,
+    );
+  }
+
   Widget _miniStat(
     String label,
     String value,
@@ -177,15 +215,10 @@ class GlanceView extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
         ),
         const SizedBox(height: 2),
-        Text(
-          value,
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-            color: valueColor,
-            fontFeatures: const [kWidgetTabularFeature],
-          ),
-          maxLines: 1,
+        _amountWithYen(
+          value: value,
+          fontSize: 11,
+          color: valueColor,
           overflow: TextOverflow.ellipsis,
         ),
       ],

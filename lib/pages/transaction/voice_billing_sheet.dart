@@ -11,9 +11,8 @@ import '../../services/system/logger_service.dart';
 import '../../styles/tokens.dart';
 import '../../widgets/ai/ai_setup_helpers.dart';
 import '../../widgets/ai/bill_confirm_card.dart';
-import '../ai/ai_settings_page.dart';
 
-/// 语音记账确认流：多引擎听写/直接记账 → 用户确认落库（ADR-052）。
+/// 语音记账确认流：多引擎听写/直接记账 → 用户确认落库（ADR-052 / ADR-067）。
 Future<void> showVoiceBillingSheet(BuildContext context) {
   return showModalBottomSheet<void>(
     context: context,
@@ -34,6 +33,8 @@ class _VoiceBillingSheet extends ConsumerStatefulWidget {
 }
 
 class _VoiceBillingSheetState extends ConsumerState<_VoiceBillingSheet> {
+  static const _disabledMessage = '该功能未启用，请到 AI 设置中选择语音识别引擎';
+
   String _transcript = '';
   bool _listening = false;
   bool _extracting = false;
@@ -57,88 +58,22 @@ class _VoiceBillingSheetState extends ConsumerState<_VoiceBillingSheet> {
   }
 
   Future<void> _bootstrap() async {
-    final session = ref.read(voiceRecognitionSessionProvider);
-    final prefStore = ref.read(speechEnginePreferenceStoreProvider);
-    var engine = await prefStore.load();
-    final systemOk = await session.isSystemAvailable();
-
-    if (engine == SpeechRecognitionEngineKind.system && !systemOk) {
-      if (!mounted) return;
-      setState(() {
-        _error = '本机系统语音识别不可用，请改用离线模型或 AI 语音模型';
-      });
-      final switched = await _promptPickEngine(systemOk: systemOk);
-      if (switched == null) return;
-      await prefStore.save(switched);
-      ref.invalidate(speechEngineKindProvider);
-      engine = switched;
-    }
-
-    _engine = engine;
     await _startListen();
   }
 
-  Future<SpeechRecognitionEngineKind?> _promptPickEngine({
-    required bool systemOk,
-  }) async {
-    final offline = ref.read(offlineAsrModelStoreProvider);
-    final readiness = SpeechEngineReadiness(
-      offlineStore: offline,
-      aiStore: ref.read(aiProviderStoreProvider),
-    );
-    final options = <SpeechRecognitionEngineKind>[];
-    for (final k in SpeechRecognitionEngineKind.values) {
-      if (await readiness.isSelectable(k, systemAvailable: systemOk)) {
-        options.add(k);
-      }
-    }
-    if (!mounted) return null;
-    if (options.isEmpty) {
-      setState(() {
-        _error = '暂无可用的语音识别引擎，请到 AI 设置下载离线模型或配置语音能力';
-      });
-      return null;
-    }
-    return showModalBottomSheet<SpeechRecognitionEngineKind>(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-              padding: EdgeInsets.all(16),
-              child: Text(
-                '选择语音识别引擎',
-                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
-              ),
-            ),
-            for (final k in options)
-              ListTile(
-                title: Text(k.label),
-                onTap: () => Navigator.pop(ctx, k),
-              ),
-            ListTile(
-              title: const Text('去 AI 设置'),
-              leading: const Icon(Icons.settings_outlined),
-              onTap: () async {
-                Navigator.pop(ctx);
-                await Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const AiSettingsPage(),
-                  ),
-                );
-              },
-            ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
-    );
-  }
-
   Future<void> _startListen() async {
-    final engine = _engine;
-    if (engine == null) return;
+    final engine =
+        await ref.read(speechEnginePreferenceStoreProvider).load();
+    if (!mounted) return;
+    setState(() => _engine = engine);
+
+    if (engine == SpeechRecognitionEngineKind.disabled) {
+      setState(() {
+        _listening = false;
+        _error = _disabledMessage;
+      });
+      return;
+    }
 
     if (engine == SpeechRecognitionEngineKind.aiVoice) {
       try {
@@ -259,6 +194,7 @@ class _VoiceBillingSheetState extends ConsumerState<_VoiceBillingSheet> {
   Widget build(BuildContext context) {
     final bottom = MediaQuery.viewInsetsOf(context).bottom;
     final engineLabel = _engine?.label;
+    final disabled = _engine == SpeechRecognitionEngineKind.disabled;
     return Padding(
       padding: EdgeInsets.fromLTRB(16, 12, 16, 16 + bottom),
       child: Column(
@@ -301,29 +237,33 @@ class _VoiceBillingSheetState extends ConsumerState<_VoiceBillingSheet> {
           ],
           const SizedBox(height: 8),
           Text(
-            _listening
-                ? '正在聆听，说完后点「识别」'
-                : (_extracting ? '正在识别…' : '识别结果确认后才会入账'),
+            disabled
+                ? '请先在 AI 设置中启用语音识别'
+                : (_listening
+                    ? '正在聆听，说完后点「识别」'
+                    : (_extracting ? '正在识别…' : '识别结果确认后才会入账')),
             style: const TextStyle(color: PigTokens.textSecondary),
           ),
-          const SizedBox(height: 12),
-          Container(
-            constraints: const BoxConstraints(minHeight: 64),
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: PigTokens.surfaceInput,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Text(
-              _transcript.isEmpty ? '例如：午餐花了三十五块' : _transcript,
-              style: TextStyle(
-                color: _transcript.isEmpty
-                    ? PigTokens.textTertiary
-                    : PigTokens.textPrimary,
+          if (!disabled) ...[
+            const SizedBox(height: 12),
+            Container(
+              constraints: const BoxConstraints(minHeight: 64),
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: PigTokens.surfaceInput,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                _transcript.isEmpty ? '例如：午餐花了三十五块' : _transcript,
+                style: TextStyle(
+                  color: _transcript.isEmpty
+                      ? PigTokens.textTertiary
+                      : PigTokens.textPrimary,
+                ),
               ),
             ),
-          ),
+          ],
           if (_error != null) ...[
             const SizedBox(height: 8),
             Text(_error!, style: const TextStyle(color: PigTokens.danger)),
@@ -343,7 +283,7 @@ class _VoiceBillingSheetState extends ConsumerState<_VoiceBillingSheet> {
               children: [
                 TextButton(
                   onPressed: _extracting ? null : _startListen,
-                  child: const Text('重新说'),
+                  child: Text(disabled ? '重试' : '重新说'),
                 ),
                 const Spacer(),
                 if (_listening)

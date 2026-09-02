@@ -1,5 +1,48 @@
 # 小猪记账 · 升级日志
 
+## 0.5.0
+
+**版本：** `0.5.0+11`  
+**相对：** `0.4.3+10`  
+**日期：** 2026-09-01
+
+### 后台直存：统一「识别结果」+ 阻塞
+
+结果通知标题固定「识别结果」；正文按入账笔（含金额）/ 跳过笔 / 失败张 / 阻塞张拼接并省略 0。失败张=不自动重试的终态整图；阻塞=后台传输失败入队、回前台重试。点击：有失败张→失败 Dialog（原因合并）；否则进明细（有入账可跳笔）。回前台重试时进度「识别继续」/「继续调用AI分析」（不横幅），完成后同 id 替换结果横幅。截图取消文案仍独立。
+
+### 分享冷启：「已收到」空窗（ADR-069）
+
+进程被杀后首次分享，通知栏曾空 4–5s 才出现「AI 分析」。根因是 Relay 立刻拉起 MainActivity/Flutter 抢主线程，早期 FGS 未及时 `startForeground`。改为：`start` **先同 id 直发进度通知**再起 FGS；分享入口 **`startForShareIngress`** 等 `startForeground`（或 ≤1.5s）再进主界面。
+
+### 截图自动：单关联窗（ADR-068）
+
+废止独立 **稳定期 3s**、**候选总时限 2min**、DATE_ADDED **±15s 删原补扫**。检出即 **15s 关联窗** + 早期进度（**原生立刻 FGS**）；同路径不重置（名称+size 未变则忽略）；短观察 2s / **删原短等 2s**；真替换立刻入账门闩。程序日志 tag `Screenshot` 文案随状态跃迁更新，时长单位为 **s**。
+
+### 程序日志：去掉临时排障面（ADR-065）
+
+删 Dart `ShareProgress` 时序日志与 Widget options 全量 dump / `onResume` diag；截图 `settleLog` 仅保留状态跃迁；原生 FGS / ShareRelay / 语音音频会话只留失败日志。
+
+### 分享 / FGS 去冗余（ADR-066）
+
+删旧单路径分享 API；FGS `start`/`update` 合并同实现；分享「已收到」文案单源；分享路径不再 Dart 二次截断。MainActivity 直收 SEND 调试入口保留。
+
+### 废止系统 ASR，默认未启用（ADR-067）
+
+去掉系统 ASR 与 `speech_to_text`；AI 设置「语音识别」首格改为「未启用」（默认；旧 `system` 偏好迁移为未启用）。实引擎仅 Vosk / Whisper / AI 语音。未启用时点语音仍开弹层，层内提示并「去设置」（ADR-057）。进 AI 设置不再因探测系统 ASR 弹麦克风权限。
+
+### 版本与文档
+
+- `pubspec.yaml` → `0.5.0+11`
+- `docs/development.md` / `docs/framework.md` / `CONTEXT.md`：ADR-065 / ADR-066 / ADR-067 / ADR-068 / ADR-069；统一识别结果与阻塞
+- `docs/adr/065-logging-trim-debug-surfaces.md` · `docs/adr/066-share-fgs-dedupe.md` · `docs/adr/067-disable-system-asr.md` · `docs/adr/068-screenshot-single-assoc-window.md` · `docs/adr/069-share-cold-start-early-progress.md`
+- 本机 `venv/APK` 留 split-per-abi 全套（`PiggyCount-0.5.0+11-*.apk`）
+
+### 不受影响
+
+非候选过滤 / 分享回源 hold ≥1s / 中号跟槽渲图行为保持。识别 / 落库语义不变（截图等待时序见 ADR-068；结果通知见上）。截图取消通知仍独立。
+
+---
+
 ## 0.4.3
 
 **版本：** `0.4.3+10`  
@@ -22,19 +65,15 @@
 
 废止固定 364×182 / 宽度分桶；渲图宽高跟桌面槽位走，纵向按 `10:162:10` 画出透明边；`fitCenter`，不裁透明边。
 
-### 程序日志：去掉临时排障面（ADR-065）
-
-删 Dart `ShareProgress` 时序日志与 Widget options 全量 dump / `onResume` diag；截图 `settleLog` 仅保留状态跃迁（开始等待 / 重置 / 取消 / 非候选 / 短观察结论 / 替换 / 门闩通过或失败 / 总时限 / 删原补扫）。原生 FGS / ShareRelay / 语音音频会话只留 `Log.e`（及无图 uri 的 `Log.w`），去掉成功路径 `Log.i`。
-
 ### 版本与文档
 
 - `pubspec.yaml` → `0.4.3+10`
-- `docs/development.md` / `docs/framework.md` / `CONTEXT.md`：ADR-062 / 063（回源 hold）/ 064 / 065；非候选过滤
+- `docs/development.md` / `docs/framework.md` / `CONTEXT.md`：ADR-062 / 063（回源 hold）/ 064；非候选过滤
 - GitHub Release 附带 `arm64-v8a` 真机测试包（本机 `venv/APK` 另留 split-per-abi 全套）
 
 ### 不受影响
 
-前台选图不走截图关联窗；稳定期 3s / 短观察 2s / 替换后只再走稳定期仍按 ADR-048 保留部分。识别 / 落库 / 结果通知语义不变。
+前台选图不走截图关联窗；稳定期 3s / 短观察 2s / 替换后只再走稳定期仍按 ADR-048 保留部分。识别 / 落库 / 结果通知语义不变。冷/热启分享与 FGS 保活行为不变。
 
 ---
 

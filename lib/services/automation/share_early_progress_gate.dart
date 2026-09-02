@@ -10,9 +10,9 @@ class ShareEarlyProgressGate {
 
   static DateTime? _shownAt;
 
-  /// 在回源并 [backgroundSettle] 之后调用；[alreadyVisible] 默认 0（不再把前台 Relay 时段计入）。
-  static void markShown({Duration alreadyVisible = Duration.zero}) {
-    _shownAt = DateTime.now().subtract(alreadyVisible);
+  /// 在回源并 [backgroundSettle] 之后调用。
+  static void markShown() {
+    _shownAt = DateTime.now();
   }
 
   static Future<void> awaitMinDisplay() async {
@@ -23,9 +23,5 @@ class ShareEarlyProgressGate {
     if (remaining > Duration.zero) {
       await Future<void>.delayed(remaining);
     }
-  }
-
-  static void reset() {
-    _shownAt = null;
   }
 }

@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import '../app_database.dart';
+import '../../utils/screenshot_watch_path.dart';
 
 /// 应用设置（智能记账开关等）读写。
 class SettingsRepository {
@@ -69,4 +72,67 @@ class SettingsRepository {
         );
   }
 
+  static const screenshotWatchDirsKey = 'screenshot_watch_directories';
+
+  /// 截图自动记账监听目录（相对路径列表，如 `Pictures/Screenshots`；ADR-070）。
+  Future<List<String>> screenshotWatchDirectories() async {
+    final row = await (_db.select(_db.appSettings)
+          ..where((t) => t.key.equals(screenshotWatchDirsKey)))
+        .getSingleOrNull();
+    return _decodeWatchDirs(row?.value);
+  }
+
+  Stream<List<String>> watchScreenshotWatchDirectories() {
+    return (_db.select(_db.appSettings)
+          ..where((t) => t.key.equals(screenshotWatchDirsKey)))
+        .watch()
+        .map((rows) => _decodeWatchDirs(rows.isEmpty ? null : rows.first.value));
+  }
+
+  /// 是否已写入过监听目录设置（含空列表；用于区分「从未扫描」）。
+  Future<bool> hasScreenshotWatchDirectoriesSetting() async {
+    final row = await (_db.select(_db.appSettings)
+          ..where((t) => t.key.equals(screenshotWatchDirsKey)))
+        .getSingleOrNull();
+    return row != null;
+  }
+
+  Future<void> setScreenshotWatchDirectories(List<String> dirs) async {
+    final cleaned = <String>[];
+    final seen = <String>{};
+    for (final raw in dirs) {
+      final n = ScreenshotWatchPath.normalize(raw);
+      if (n == null) continue;
+      final key = n.toLowerCase();
+      if (!seen.add(key)) continue;
+      cleaned.add(n);
+    }
+    cleaned.sort();
+    await _db.into(_db.appSettings).insertOnConflictUpdate(
+          AppSettingsCompanion.insert(
+            key: screenshotWatchDirsKey,
+            value: jsonEncode(cleaned),
+          ),
+        );
+  }
+
+  static List<String> _decodeWatchDirs(String? raw) {
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return const [];
+      final out = <String>[];
+      final seen = <String>{};
+      for (final item in decoded.whereType<String>()) {
+        final n = ScreenshotWatchPath.normalize(item);
+        if (n == null) continue;
+        if (!seen.add(n.toLowerCase())) continue;
+        out.add(n);
+      }
+      out.sort();
+      return out;
+    } catch (_) {
+      return const [];
+    }
+  }
 }

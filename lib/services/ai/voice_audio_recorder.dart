@@ -7,7 +7,7 @@ import 'package:record/record.dart';
 
 import '../../utils/app_permissions.dart';
 
-/// 短录音（非系统 ASR 引擎共用）。
+/// 短录音（Vosk 实时听写除外；Whisper / AI 语音共用）。
 class VoiceAudioRecorder {
   VoiceAudioRecorder({AudioRecorder? recorder})
       : _recorder = recorder ?? AudioRecorder();

@@ -1,7 +1,7 @@
 package com.xiaozhu.piggy_count
 
 /**
- * 截图非候选：回收站 / 已删标记等不得进入稳定期。
+ * 截图非候选：回收站 / 已删标记等不得进入关联窗候选。
  * 信号为 OR（宁可多滤）。
  */
 object ScreenshotNonCandidate {

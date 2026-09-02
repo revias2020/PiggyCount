@@ -8,17 +8,22 @@ String formatMoney(double value) {
 /// 带 ¥ 前缀（桌面小组件等）。
 String formatWidgetMoney(double value) => '¥${formatMoney(value)}';
 
-/// 小号本月金额：&lt;1k 整数；\[1k,1w) 为 `x.xxk`；≥1w 为 `x.xxw`（档内截断两位）。
-String formatWidgetMoneyCompact(double value) {
+/// 量级紧凑金额：&lt;1k 整数；\[1k,1w) 为 `x.xxk`；≥1w 为 `x.xxw`（档内截断两位）。
+/// 不含货币符号；明细月度汇总收入/支出与小组件本月档共用刻度。
+String formatMoneyScaleCompact(double value) {
   final abs = value.abs();
   if (abs < 1000) {
-    return '¥${abs.truncate()}';
+    return '${abs.truncate()}';
   }
   if (abs < 10000) {
-    return '¥${_truncateFixed2(abs / 1000)}k';
+    return '${_truncateFixed2(abs / 1000)}k';
   }
-  return '¥${_truncateFixed2(abs / 10000)}w';
+  return '${_truncateFixed2(abs / 10000)}w';
 }
+
+/// 小号本月金额：`¥` + [formatMoneyScaleCompact]。
+String formatWidgetMoneyCompact(double value) =>
+    '¥${formatMoneyScaleCompact(value)}';
 
 String _truncateFixed2(double v) {
   final truncated = (v * 100).floor() / 100;

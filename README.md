@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B?logo=flutter)](https://flutter.dev)
 [![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20iOS-lightgrey)](#)
-[![Version](https://img.shields.io/badge/version-0.4.3-green)](pubspec.yaml)
+[![Version](https://img.shields.io/badge/version-0.5.0-green)](pubspec.yaml)
 
 **免费 · 开源 · 本机优先** 的个人记账应用。
 
@@ -24,7 +24,7 @@
 | 隐私 | 可能追踪 / 分析 | **无广告、无追踪、无强制登录** |
 | 记账方式 | 多为手动 | 手动 + **智能记账**（图片 / 语音 / 截图自动化，须配置 AI） |
 
-> 平台：Android · iOS（**0.4.3 真机测试以 Android 为主**；桌面小组件目前仅 Android）  
+> 平台：Android · iOS（**0.5.0 真机测试以 Android 为主**；桌面小组件目前仅 Android）  
 > 界面语言：简体中文（当前仅亮色模式）
 
 ---
@@ -49,7 +49,7 @@
 
 **AI 服务商与能力绑定为使用前提**（内置智谱或自填任意 OpenAI 兼容接口；文本 / 图片 / 语音能力各须测通或就绪）：
 
-- **语音记账** — 可选系统 ASR、本机 Vosk / Whisper，或 AI 语音模型直接记账
+- **语音记账** — 在 AI 设置启用引擎后可用：本机 Vosk / Whisper，或 AI 语音模型直接记账（默认未启用）
 - **拍照 / 相册** — 支持多选（上限 9），识别确认按图分组；已测通 Vision 服务商失败时自动回退切换
 - **Android** — 截图自动、系统分享入账（含多选）；后台直存可前台服务保活；成功后进**待核对**
 - CSV 导入可用 AI 做列名与分类/标签映射

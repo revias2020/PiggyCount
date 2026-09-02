@@ -25,19 +25,6 @@ Future<void> updateAppWidget(WidgetRef ref, {bool warmUp = false}) async {
   );
 }
 
-/// 用 [Ref] 的版本（无 WidgetRef 场景）。
-Future<void> updateAppWidgetWithRef(Ref ref, {bool warmUp = false}) async {
-  if (!Platform.isAndroid) return;
-  final ledgerId = ref.read(currentLedgerIdProvider);
-  final stats = ref.read(statisticsRepositoryProvider);
-  await WidgetManager.instance.updateAllWidgets(
-    stats: stats,
-    ledgerId: ledgerId,
-    themeColor: PigTokens.primary,
-    warmUpAllSpecs: warmUp,
-  );
-}
-
 /// 监听生命周期：回前台刷新；进程内存活时排到本地 0:00 尽力刷新；
 /// 原生添加/改尺寸时进程内重渲（ADR-023）。
 class WidgetRefreshHost extends ConsumerStatefulWidget {

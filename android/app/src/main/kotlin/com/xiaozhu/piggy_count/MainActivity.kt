@@ -66,12 +66,51 @@ class MainActivity : FlutterFragmentActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "startScreenshotObserver" -> {
-                        startScreenshotObserver(flutterEngine)
-                        result.success(true)
+                        @Suppress("UNCHECKED_CAST")
+                        val dirs = (call.arguments as? Map<*, *>)
+                            ?.get("directories") as? List<*>
+                        val normalized = dirs
+                            ?.mapNotNull { (it as? String)?.let(ScreenshotWatchPaths::normalize) }
+                            ?: emptyList()
+                        if (normalized.isEmpty()) {
+                            stopScreenshotObserver()
+                            result.success(false)
+                        } else {
+                            startScreenshotObserver(flutterEngine, normalized)
+                            result.success(true)
+                        }
                     }
                     "stopScreenshotObserver" -> {
                         stopScreenshotObserver()
                         result.success(true)
+                    }
+                    "setWatchDirectories" -> {
+                        @Suppress("UNCHECKED_CAST")
+                        val dirs = (call.arguments as? Map<*, *>)
+                            ?.get("directories") as? List<*>
+                        val normalized = dirs
+                            ?.mapNotNull { (it as? String)?.let(ScreenshotWatchPaths::normalize) }
+                            ?: emptyList()
+                        if (normalized.isEmpty()) {
+                            stopScreenshotObserver()
+                            result.success(false)
+                        } else {
+                            val obs = screenshotObserver
+                            if (obs != null) {
+                                obs.setWatchDirectories(normalized)
+                                result.success(true)
+                            } else {
+                                startScreenshotObserver(flutterEngine, normalized)
+                                result.success(true)
+                            }
+                        }
+                    }
+                    "discoverScreenshotDirectories" -> {
+                        result.success(ScreenshotDirectoryDiscovery.discover(this))
+                    }
+                    "normalizeWatchDirectory" -> {
+                        val raw = call.arguments as? String
+                        result.success(raw?.let(ScreenshotWatchPaths::normalize))
                     }
                     else -> result.notImplemented()
                 }
@@ -96,13 +135,6 @@ class MainActivity : FlutterFragmentActivity() {
                             )
                         }
                     }
-                    "getPendingSharedImage" -> {
-                        // 兼容旧单路径
-                        val path = pendingSharedPaths?.firstOrNull()
-                        pendingSharedPaths = null
-                        pendingSharedTruncated = false
-                        result.success(path)
-                    }
                     else -> result.notImplemented()
                 }
             }
@@ -124,13 +156,6 @@ class MainActivity : FlutterFragmentActivity() {
                         val title = args?.get("title") as? String ?: "智能记账"
                         val body = args?.get("body") as? String ?: "识别进行中…"
                         AutoBillingForegroundService.start(this, title, body)
-                        result.success(null)
-                    }
-                    "updateBillingForeground" -> {
-                        val args = call.arguments as? Map<*, *>
-                        val title = args?.get("title") as? String ?: "智能记账"
-                        val body = args?.get("body") as? String ?: ""
-                        AutoBillingForegroundService.update(this, title, body)
                         result.success(null)
                     }
                     "stopBillingForeground" -> {
@@ -168,13 +193,12 @@ class MainActivity : FlutterFragmentActivity() {
         try {
             val copied = SharedImageIngress.copyUrisToCache(this, uris)
             if (copied.paths.isEmpty()) return
-            // 直达路径无 ShareRelay：此处补早期 FGS（ADR-063）
-            val body = if (copied.truncated) {
-                "已收到（已截取前 9 张），准备识别…"
-            } else {
-                "已收到，准备识别…"
-            }
-            AutoBillingForegroundService.start(this, "分享入账", body)
+            // 直达路径无 ShareRelay：此处补早期 FGS（ADR-063）；调试/旧入口保留（ADR-066 S2）
+            AutoBillingForegroundService.start(
+                this,
+                SharedImageIngress.SHARE_PROGRESS_TITLE,
+                SharedImageIngress.earlyProgressBody(copied.truncated),
+            )
             acceptSharedPaths(copied, pushIfReady = pushIfReady)
         } catch (e: Exception) {
             Log.e(TAG, "handleSharedImage failed", e)
@@ -259,8 +283,12 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
-    private fun startScreenshotObserver(engine: FlutterEngine) {
+    private fun startScreenshotObserver(
+        engine: FlutterEngine,
+        watchDirectories: Collection<String>,
+    ) {
         stopScreenshotObserver()
+        if (watchDirectories.isEmpty()) return
         val channel = MethodChannel(engine.dartExecutor.binaryMessenger, SCREENSHOT_CHANNEL)
         screenshotObserver = ScreenshotObserver(
             this,
@@ -268,6 +296,12 @@ class MainActivity : FlutterFragmentActivity() {
                 channel.invokeMethod("onScreenshotDetected", path)
             },
             onScreenshotProgress = { path ->
+                // 与关联窗检出日志同拍：原生先贴 FGS，避免仅靠 Dart 通知在后台迟到。
+                AutoBillingForegroundService.start(
+                    this,
+                    "检测到截图",
+                    "等待确认后识别…",
+                )
                 channel.invokeMethod("onScreenshotProgress", path)
             },
             onScreenshotSuperseded = { oldPath, newPath ->
@@ -282,6 +316,7 @@ class MainActivity : FlutterFragmentActivity() {
             onSettleLog = { message ->
                 channel.invokeMethod("onScreenshotSettleLog", message)
             },
+            initialWatchDirectories = watchDirectories,
         )
         val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
@@ -289,7 +324,6 @@ class MainActivity : FlutterFragmentActivity() {
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         }
         contentResolver.registerContentObserver(uri, true, screenshotObserver!!)
-        Log.i(TAG, "screenshot observer registered")
     }
 
     private fun stopScreenshotObserver() {

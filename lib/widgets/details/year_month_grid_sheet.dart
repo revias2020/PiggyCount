@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../styles/tokens.dart';
+import '../../utils/details_month_bounds.dart';
 
 /// 年月网格选择底部弹层；返回选中月的 1 号，取消返回 null。
 Future<DateTime?> showYearMonthGridSheet(
@@ -34,21 +35,40 @@ class _YearMonthGridSheetState extends State<_YearMonthGridSheet> {
   late int _year;
   late int _month;
 
-  static const _yearsBack = 8;
-  static const _yearsForward = 2;
+  static const _yearsBack = DetailsMonthBounds.yearsBack;
 
   @override
   void initState() {
     super.initState();
-    _year = widget.initialMonth.year;
-    _month = widget.initialMonth.month;
+    final initial = widget.initialMonth;
+    _year = initial.year;
+    _month = DetailsMonthBounds.isFutureMonth(initial.year, initial.month)
+        ? DateTime.now().month
+        : initial.month;
   }
 
   List<int> get _years {
     final now = DateTime.now().year;
     return [
-      for (var y = now - _yearsBack; y <= now + _yearsForward; y++) y,
+      for (var y = now - _yearsBack; y <= now; y++) y,
     ];
+  }
+
+  bool _isMonthEnabled(int year, int month) =>
+      !DetailsMonthBounds.isFutureMonth(year, month);
+
+  void _selectYear(int year) {
+    setState(() {
+      _year = year;
+      if (!_isMonthEnabled(_year, _month)) {
+        _month = DateTime.now().month;
+      }
+    });
+  }
+
+  void _selectMonth(int month) {
+    if (!_isMonthEnabled(_year, month)) return;
+    setState(() => _month = month);
   }
 
   @override
@@ -97,7 +117,7 @@ class _YearMonthGridSheetState extends State<_YearMonthGridSheet> {
                 return ChoiceChip(
                   label: Text('$y'),
                   selected: selected,
-                  onSelected: (_) => setState(() => _year = y),
+                  onSelected: (_) => _selectYear(y),
                   selectedColor: PigTokens.primarySoft,
                   labelStyle: TextStyle(
                     color: selected ? PigTokens.primary : PigTokens.textPrimary,
@@ -126,12 +146,17 @@ class _YearMonthGridSheetState extends State<_YearMonthGridSheet> {
             itemBuilder: (context, index) {
               final m = index + 1;
               final selected = m == _month;
+              final enabled = _isMonthEnabled(_year, m);
               return Material(
-                color: selected ? PigTokens.primary : PigTokens.surfaceInput,
+                color: selected
+                    ? PigTokens.primary
+                    : (enabled
+                        ? PigTokens.surfaceInput
+                        : PigTokens.surfaceInput.withValues(alpha: 0.55)),
                 borderRadius: BorderRadius.circular(PigTokens.radiusCard),
                 child: InkWell(
                   borderRadius: BorderRadius.circular(PigTokens.radiusCard),
-                  onTap: () => setState(() => _month = m),
+                  onTap: enabled ? () => _selectMonth(m) : null,
                   child: Center(
                     child: Text(
                       '$m月',
@@ -140,7 +165,9 @@ class _YearMonthGridSheetState extends State<_YearMonthGridSheet> {
                         fontWeight: FontWeight.w600,
                         color: selected
                             ? PigTokens.textOnPrimary
-                            : PigTokens.textPrimary,
+                            : (enabled
+                                ? PigTokens.textPrimary
+                                : PigTokens.textTertiary),
                       ),
                     ),
                   ),
@@ -150,8 +177,9 @@ class _YearMonthGridSheetState extends State<_YearMonthGridSheet> {
           ),
           const SizedBox(height: PigTokens.spaceXl),
           FilledButton(
-            onPressed: () =>
-                Navigator.pop(context, DateTime(_year, _month)),
+            onPressed: _isMonthEnabled(_year, _month)
+                ? () => Navigator.pop(context, DateTime(_year, _month))
+                : null,
             style: FilledButton.styleFrom(
               backgroundColor: PigTokens.primary,
               foregroundColor: PigTokens.textOnPrimary,

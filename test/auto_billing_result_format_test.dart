@@ -3,85 +3,81 @@ import 'package:piggy_count/services/automation/auto_billing_service.dart';
 
 void main() {
   group('formatAutoBillingResultBody', () {
-    test('纯成功用已入账合计', () {
+    test('纯成功', () {
       expect(
         formatAutoBillingResultBody(
           success: 3,
           skip: 0,
-          fail: 0,
-          imagesUnsaved: 0,
+          failImages: 0,
+          blocked: 0,
           successAmount: 12.5,
         ),
-        '已入账 3 笔，合计 ¥12.50',
+        '入账 3 笔（¥12.50）',
       );
     });
 
-    test('混桶用三数字且可附整图未入账', () {
+    test('混桶省略 0，阻塞用另有', () {
       expect(
         formatAutoBillingResultBody(
           success: 2,
           skip: 1,
-          fail: 0,
-          imagesUnsaved: 1,
+          failImages: 1,
+          blocked: 1,
+          successAmount: 35,
         ),
-        '成功 2 笔，跳过 1 笔，失败 0 笔，另有 1 张未入账',
+        '入账 2 笔（¥35.00），跳过 1 笔，失败 1 张；另有 1 张阻塞，打开 App 后继续',
       );
     });
 
-    test('仅整图未入账不写三个 0 笔', () {
+    test('纯失败张', () {
       expect(
         formatAutoBillingResultBody(
           success: 0,
           skip: 0,
-          fail: 0,
-          imagesUnsaved: 3,
+          failImages: 3,
+          blocked: 0,
         ),
-        '另有 3 张未入账',
+        '失败 3 张',
       );
     });
 
-    test('单张整图未入账保留原正文', () {
+    test('纯阻塞不加另有', () {
       expect(
         formatAutoBillingResultBody(
           success: 0,
           skip: 0,
-          fail: 0,
-          imagesUnsaved: 1,
-          singleUnsavedBody: '该图可能不是支付截图',
+          failImages: 0,
+          blocked: 1,
         ),
-        '该图可能不是支付截图',
+        '1 张阻塞，打开 App 后继续',
+      );
+    });
+
+    test('batchNote 附加', () {
+      expect(
+        formatAutoBillingResultBody(
+          success: 1,
+          skip: 0,
+          failImages: 0,
+          blocked: 0,
+          successAmount: 1,
+          batchNote: '已截取前 9 张',
+        ),
+        '入账 1 笔（¥1.00）（已截取前 9 张）',
       );
     });
   });
 
   group('formatAutoBillingResultTitle', () {
-    test('有成功无失败笔 → 自动记账成功', () {
-      expect(
-        formatAutoBillingResultTitle(
-          success: 1,
-          skip: 1,
-          fail: 0,
-          imagesUnsaved: 0,
-        ),
-        '自动记账成功',
-      );
+    test('固定识别结果', () {
+      expect(formatAutoBillingResultTitle(), '识别结果');
     });
+  });
 
-    test('仅跳过 → 记账取消', () {
-      expect(
-        formatAutoBillingResultTitle(
-          success: 0,
-          skip: 2,
-          fail: 0,
-          imagesUnsaved: 0,
-        ),
-        '记账取消',
-      );
-    });
-
-    test('点击成功仅看成功笔数', () {
-      expect(autoBillingResultClickSuccess(1), isTrue);
-      expect(autoBillingResultClickSuccess(0), isFalse);
+  group('autoBillingResultClickSuccess', () {
+    test('无失败张走明细，有失败张走 Dialog', () {
+      expect(autoBillingResultClickSuccess(0), isTrue);
+      expect(autoBillingResultClickSuccess(1), isFalse);
     });
   });
 }

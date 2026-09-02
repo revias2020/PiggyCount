@@ -34,10 +34,7 @@ class VoiceAudioSession {
   static Future<void> restoreIfNeeded() async {
     if (!Platform.isAndroid) return;
     try {
-      final ok = await _channel.invokeMethod<bool>('restoreIfNeeded');
-      if (ok == true) {
-        logger.info('VoiceAudio', 'restored audio mode');
-      }
+      await _channel.invokeMethod<void>('restoreIfNeeded');
     } catch (e) {
       logger.warning('VoiceAudio', 'restoreIfNeeded failed: $e');
     }

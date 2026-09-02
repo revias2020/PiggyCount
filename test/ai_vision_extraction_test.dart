@@ -5,7 +5,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:piggy_count/ai/ai_provider_config.dart';
 import 'package:piggy_count/ai/ai_provider_store.dart';
 import 'package:piggy_count/ai/ai_vision_failure.dart';
-import 'package:piggy_count/ai/ai_vision_failure.dart';
 import 'package:piggy_count/ai/extraction_context.dart';
 import 'package:piggy_count/ai/extraction_engine.dart';
 import 'package:piggy_count/ai/openai_compatible_client.dart';

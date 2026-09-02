@@ -5,16 +5,12 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:speech_to_text/speech_to_text.dart';
 import 'package:vosk_flutter/vosk_flutter.dart';
 import 'package:whisper_ggml/whisper_ggml.dart';
 
 import '../../ai/ai_provider_store.dart';
-import '../../ai/ai_provider_config.dart';
 import '../platform/voice_audio_session.dart';
-import '../system/logger_service.dart';
 import 'offline_asr_model_store.dart';
-import 'speech_asr_service.dart';
 import 'speech_engine_preference.dart';
 import 'voice_audio_recorder.dart';
 
@@ -33,21 +29,18 @@ class VoiceListenOutcome {
   final bool isDirectBilling;
 }
 
-/// 多引擎语音会话（ADR-052）：共用听/停交互，底层按引擎分流。
+/// 多引擎语音会话（ADR-052 / ADR-067）：共用听/停交互，底层按引擎分流。
 class VoiceRecognitionSession {
   VoiceRecognitionSession({
     required this.preferenceStore,
     required this.offlineStore,
     required this.aiStore,
-    SpeechAsrService? systemAsr,
     VoiceAudioRecorder? recorder,
-  })  : _systemAsr = systemAsr ?? SpeechAsrService(),
-        _recorder = recorder ?? VoiceAudioRecorder();
+  }) : _recorder = recorder ?? VoiceAudioRecorder();
 
   final SpeechEnginePreferenceStore preferenceStore;
   final OfflineAsrModelStore offlineStore;
   final AiProviderStore aiStore;
-  final SpeechAsrService _systemAsr;
   final VoiceAudioRecorder _recorder;
 
   SpeechRecognitionEngineKind? _active;
@@ -57,34 +50,21 @@ class VoiceRecognitionSession {
   String _lastPartial = '';
   final List<StreamSubscription<dynamic>> _voskSubs = [];
 
-  Future<bool> isSystemAvailable() async {
-    try {
-      final stt = SpeechToText();
-      return await stt.initialize(
-        onError: (_) {},
-        onStatus: (_) {},
-      );
-    } catch (e) {
-      logger.warning('VoiceSession', '系统 ASR 不可用: $e');
-      return false;
-    }
-  }
-
   Future<void> start({
     required SpeechRecognitionEngineKind engine,
     required void Function(String partial) onPartial,
   }) async {
+    if (engine == SpeechRecognitionEngineKind.disabled) {
+      throw StateError('该功能未启用，请到 AI 设置中选择语音识别引擎');
+    }
     // 「重新说」走 cancel 但不还原音频（ADR-060）。
     await cancel(restoreAudio: false);
     _active = engine;
     _lastPartial = '';
     await VoiceAudioSession.begin();
     switch (engine) {
-      case SpeechRecognitionEngineKind.system:
-        await _systemAsr.start(onPartial: (t) {
-          _lastPartial = t;
-          onPartial(t);
-        });
+      case SpeechRecognitionEngineKind.disabled:
+        break;
       case SpeechRecognitionEngineKind.vosk:
         await _startVosk(onPartial);
       case SpeechRecognitionEngineKind.whisper:
@@ -98,15 +78,12 @@ class VoiceRecognitionSession {
   Future<VoiceListenOutcome> stop() async {
     final engine = _active;
     _active = null;
-    if (engine == null) {
+    if (engine == null || engine == SpeechRecognitionEngineKind.disabled) {
       throw StateError('未在聆听');
     }
     switch (engine) {
-      case SpeechRecognitionEngineKind.system:
-        final text = (await _systemAsr.stop()).trim();
-        return VoiceListenOutcome.dictation(
-          text.isEmpty ? _lastPartial.trim() : text,
-        );
+      case SpeechRecognitionEngineKind.disabled:
+        throw StateError('未在聆听');
       case SpeechRecognitionEngineKind.vosk:
         final text = await _stopVosk();
         return VoiceListenOutcome.dictation(
@@ -124,9 +101,6 @@ class VoiceRecognitionSession {
 
   /// [restoreAudio]：仅弹层结束时为 true；「重新说」必须为 false（ADR-060）。
   Future<void> cancel({bool restoreAudio = false}) async {
-    try {
-      await _systemAsr.cancel();
-    } catch (_) {}
     try {
       await _recorder.cancel();
     } catch (_) {}
@@ -233,48 +207,13 @@ class VoiceRecognitionSession {
     }
   }
 
-  /// 将系统 ASR 原始异常转成可读中文。
+  /// 将识别异常转成可读中文。
   static String friendlyError(Object error) {
     if (error is PlatformException) {
-      if (error.code == 'recognizerNotAvailable') {
-        return '本机系统语音识别不可用，请在 AI 设置中改用离线模型或 AI 语音模型';
-      }
       return error.message?.isNotEmpty == true
           ? error.message!
           : '语音识别失败（${error.code}）';
     }
     return '$error';
-  }
-}
-
-/// 引擎是否可选（设置页 / 打开语音前）。
-class SpeechEngineReadiness {
-  SpeechEngineReadiness({
-    required this.offlineStore,
-    required this.aiStore,
-  });
-
-  final OfflineAsrModelStore offlineStore;
-  final AiProviderStore aiStore;
-
-  Future<bool> isSelectable(
-    SpeechRecognitionEngineKind kind, {
-    required bool systemAvailable,
-  }) async {
-    switch (kind) {
-      case SpeechRecognitionEngineKind.system:
-        return systemAvailable;
-      case SpeechRecognitionEngineKind.vosk:
-        return offlineStore.isReady(OfflineAsrModelCatalog.vosk);
-      case SpeechRecognitionEngineKind.whisper:
-        return offlineStore.isReady(OfflineAsrModelCatalog.whisper);
-      case SpeechRecognitionEngineKind.aiVoice:
-        try {
-          await aiStore.resolve(AiCapabilityKind.voice);
-          return true;
-        } on AiCapabilityNotReadyException {
-          return false;
-        }
-    }
   }
 }

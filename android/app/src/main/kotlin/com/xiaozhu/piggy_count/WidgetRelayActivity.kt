@@ -21,7 +21,6 @@ class WidgetRelayActivity : Activity() {
                 finish()
                 return
             }
-            Log.i(TAG, "widget relay → MainActivity: $data")
             startActivity(forwardIntent(data))
         } catch (e: Exception) {
             Log.e(TAG, "widget relay failed", e)

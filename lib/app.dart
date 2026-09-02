@@ -102,7 +102,14 @@ class _PiggyAppState extends ConsumerState<PiggyApp>
           await ref.read(settingsRepositoryProvider).screenshotAutoBilling();
       if (enabled) {
         try {
-          await ref.read(screenshotMonitorServiceProvider).start();
+          final dirs = await ref
+              .read(settingsRepositoryProvider)
+              .screenshotWatchDirectories();
+          if (dirs.isNotEmpty) {
+            await ref
+                .read(screenshotMonitorServiceProvider)
+                .start(directories: dirs);
+          }
         } catch (e) {
           debugPrint('恢复截图监听失败: $e');
         }
@@ -179,8 +186,7 @@ class _PiggyAppState extends ConsumerState<PiggyApp>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final ctx = rootNavigatorKey.currentContext;
       if (ctx == null || !ctx.mounted) return;
-      final title = notifications.lastFailureTitle ??
-          (body.contains('已存在相同账本') ? '记账取消' : '记账失败');
+      final title = notifications.lastFailureTitle ?? '识别结果';
       showDialog<void>(
         context: ctx,
         builder: (dialogCtx) => AlertDialog(

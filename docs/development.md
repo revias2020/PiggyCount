@@ -171,6 +171,7 @@ App 启动即打开 Drift 库；新库播种出厂目录；业务经 Repository�
 - 一体顶栏：`piggyCount` + 标题 + 账本 ▾ + 日历 + **同步** + **核对信封**（有待核对红点）+ 搜索（本 Tab 无壳层 `AppTopBar`）  
 - 同步钮：未已测通禁用；点即同步确认，不先开同步页  
 - 月度汇总：年月网格；收入｜支出｜结余；**不做**类型筛选  
+- **浏览月换月（本轮）：** 仅明细账单列表区（含空状态）支持左右滑切换 **浏览月**——左滑下一月、右滑上一月；达阈值即改月（非 PageView 邻页预览），列表滚回顶部，无过渡动画。边界：**今−8 年 … 本月**（可进空月，不可进未来）；触顶/触底静默忽略。点年月网格仍可跨月跳转；**共用** `year_month_grid_sheet` 同步禁选未来月。竖向滚列表优先于换月；标签 chip 槽内横滑仍只滚 chip（ADR-036），不触发换月。分类/标签明细 ◀▶ 本轮不改。
 
 **待核对（ADR-050）：** 后台直存（`screenshot` / `share`）成功后进入待核对（`syncId`，当前账本，本机持久）。明细行 **核对高亮**（蓝描边 + 极浅蓝底）仅本次前台，进后台清除，回前台按仍待核对重打；**点高亮行 = 已看且不打开编辑**，无高亮时点行仍编辑。信封底部弹层：列表跳转、单条已看、一键已读；有待核对显示红点。成功通知进 App 滚到该笔。日历/搜索本轮不接入。
 
@@ -184,7 +185,7 @@ App 启动即打开 Drift 库；新库播种出厂目录；业务经 Repository�
 
 报表构成下钻进来的分类/标签明细：带入报表周期，顶栏只读。
 
-**代码：** `details_page.dart` · `home_shell.dart` · `details_header.dart` · `pending_review_sheet.dart` · `pending_review_providers.dart` · `transaction_row_tile.dart` · `fading_tag_chip_strip.dart` · `transaction_providers.dart`（`MonthLedgerView`）
+**代码：** `details_page.dart` · `details_month_swipe_area.dart` · `details_month_bounds.dart` · `home_shell.dart` · `details_header.dart` · `pending_review_sheet.dart` · `pending_review_providers.dart` · `transaction_row_tile.dart` · `fading_tag_chip_strip.dart` · `transaction_providers.dart`（`MonthLedgerView`）
 
 ### 5.2 记一笔
 
@@ -273,7 +274,7 @@ ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040 / 051（及明细同步钮 ADR
 - 测连 timeout 15s；文本识别 30s、图片/语音识别 60s；保存时未测侧会打网；失败仍落盘，弹窗「返回编辑 / 确认保存」（确认则回服务商管理；遮罩/返回=留下）；绑定中的自定义商禁删  
 - **语音测连（ADR-059）：** 用 1s / 16-bit PCM / 8kHz 静音 WAV（对齐 BeeCount）；禁止空 data；静音空响应仍算测通；`input_audio` 在 content 中置于文本之前  
 - M1：旧单配置迁到内置或新建自定义并双绑；旧服务商无 `voiceModel` 时智谱补 `glm-4-voice`  
-- **语音识别引擎（ADR-052）：** 默认系统 ASR（不可用时置灰）；可选 Vosk 中文小包 / Whisper base（ModelScope 下载，不进安装包）/ AI 语音模型  
+- **语音识别引擎（ADR-052 / ADR-067）：** 默认 **未启用**；实引擎为 Vosk 中文小包 / Whisper base（ModelScope 下载，不进安装包）/ AI 语音模型；系统 ASR 已废止  
 - **语音音频还原（ADR-060）：** 仅 Android；弹层结束时条件还原 `AudioManager` 模式；「重新说」不还原
 
 **流水线：**
@@ -316,23 +317,23 @@ ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040 / 051（及明细同步钮 ADR
 |---|---|---|
 | 手动 | FAB 单击 | 无 AI |
 | 拍照 / 图片 / 备注旁相机 | 扇形或相机 | Vision → **识别确认弹层** |
-| 语音 / 备注旁语音 | 扇形或备注旁 | 按引擎：听写→文本结构化 **或** AI 直接记账 → **单卡**（ADR-052）；标题行右上关闭；底栏左「重新说」、聆听中右「识别」；**Android 关层后条件还原音频模式**（ADR-060） |
+| 语音 / 备注旁语音 | 扇形或备注旁 | 未启用时弹层内引导去设置（ADR-067）；否则按引擎：听写→文本结构化 **或** AI 直接记账 → **单卡**（ADR-052）；标题行右上关闭；底栏左「重新说」、聆听中右「识别」；**Android 关层后条件还原音频模式**（ADR-060） |
 | 截图自动 | 「我的」开关（默认关） | 通知 → Vision → **自动落库** |
 | 分享入账 | 系统分享 | 始终可收（不受截图开关）→ 同上 |
 
-**分享入账（Android）：** `ShareRelayActivity`（透明）接 `ACTION_SEND` / **`ACTION_SEND_MULTIPLE`**（ADR-058）→ 拷图（上限 9，超出截取前 9）→ **拷图成功即拉起同 id FGS 分享已收到进度**（「已收到，准备识别…」，ADR-063）→ 以 `SINGLE_TOP|CLEAR_TOP|NEW_TASK` 打进 `MainActivity`（**无固定 500/600ms**；冷启 onCreate 只写 pending 由 `getPending` 取走，热启 onNewIntent 立即推送）。**热启动**不得出现启动页；冷启动仍走主界面 LaunchTheme。Dart 接手后 `startForegroundService` 刷新文案，**先 `moveTaskToBack` 回源**，再 **「已收到…」最短展示 1s**（`ShareEarlyProgressGate`，回源后起算）后进识别；直存批次进行中返回键同样送后台（不 `finish`），避免拆掉 Flutter 引擎导致识别静默中断。多选截取时早期/结果通知注明「已截取前 9 张」。
+**分享入账（Android）：** `ShareRelayActivity`（透明）接 `ACTION_SEND` / **`ACTION_SEND_MULTIPLE`**（ADR-058）→ 拷图（上限 9，超出截取前 9）→ **拷图成功即同 id 直发「已收到…」并起 FGS**；**等 `startForeground`（或 ≤1.5s）后再**以 `SINGLE_TOP|CLEAR_TOP|NEW_TASK` 打进 `MainActivity`（ADR-063 / **069**；**无固定 500/600ms**；冷启 onCreate 只写 pending 由 `getPending` 取走，热启 onNewIntent 立即推送）。**热启动**不得出现启动页；冷启动仍走主界面 LaunchTheme。Dart 接手后 `startForegroundService` 刷新文案，**先 `moveTaskToBack` 回源**，再 **「已收到…」最短展示 1s**（`ShareEarlyProgressGate`，回源后起算）后进识别；直存批次进行中返回键同样送后台（不 `finish`），避免拆掉 Flutter 引擎导致识别静默中断。多选截取时早期/结果通知注明「已截取前 9 张」。
 
 **前台多图（ADR-058）：** 扇形「图片」/备注旁相册用系统多选（`pickMultiImage`），上限 9、超出截取并 Toast；**不做** App 内选图闸门。全部串行 Vision 后再出确认层；loading 可取消（丢弃 inflight，已完成组仍进确认层）。确认层**按图分组**（组头小缩略图可点全屏静态原图）；失败/空结果组可重试。拍照仍单张。iOS 同步前台多选；多选分享仅 Android。
 
 **识别确认弹层：** 复选默认全选；确认(N)；关即丢弃；串行落库可部分成功重试；行内只读；圆标按名匹配，未命中「未分类」（勿用落库兜底类）。**Vision 回退（ADR-055）：** 每已测通服务商仅调 1 次，失败立即切下一候选；loading 展示失败原因与「正在切换至 XX（模型）重试…」。
 
-**后台：** `AutoBillingService` 串行；结果通知按 **账单笔数** 分桶（成功/跳过/失败，ADR-056），整图无候选另述「N 张未入账」；点击：成功笔>0→明细，否则→明细+框（未点不弹）；无通知权限仍可直存。未就绪：后台失败通知引导设置；前台 Toast+去设置。直存批次开始时开启返回保活，批次结束关闭。
+**后台：** `AutoBillingService` 串行。结果通知（截图取消除外）标题固定 **「识别结果」**；正文按桶拼接、**省略为 0 的段**：`入账 N 笔（¥x.xx）`（两位小数）、`跳过 x 笔`、`失败 x 张`、有前文时 `另有 x 张阻塞，打开 App 后继续` / 纯阻塞时 `x 张阻塞，打开 App 后继续`。段序固定；有入账/跳过/失败与阻塞并存时用 `；` 接阻塞句。**失败张** = 本批一切不自动重试的终态整图（含未识别、终态 API/网络、落库失败折成张等），≠ **阻塞**。点击：失败张>0→明细+失败 Dialog（多张原因换行合并）；否则→明细，有入账则仍可滚到成功笔。未点不弹。无通知权限仍可直存。未就绪：后台失败通知引导设置；前台 Toast+去设置。直存批次开始时开启返回保活，批次结束关闭。
 
-**后台直存前台服务（ADR-054 / 063）：** Android 截图/分享 Vision 批次持有 `AutoBillingForegroundService`（`dataSync`），保证 App 在 `paused` 或冷启动分享后立即 `moveTaskToBack` 时 Dart 与网络仍可执行；进度通知与 `piggy_auto_billing` 渠道同 id（1001）。分享入账：**ShareRelay 拷图成功即起 FGS**（早于 Dart / 早于主界面闪现，ADR-063），且须在 `moveTaskToBack` **之前**已持有 FGS（ADR-054）。Dart `isActive` 须与原生对齐，批次结束再 `stop`。传输失败且当时 App 不在前台：入本机待重试队列，通知「打开 App 后将自动重试」；`resumed` 时 `retryPendingOnResume` 串行重跑（不入失败结果档）。
+**后台直存前台服务（ADR-054 / 063 / 069）：** Android 截图/分享 Vision 批次持有 `AutoBillingForegroundService`（`dataSync`），保证 App 在 `paused` 或冷启动分享后立即 `moveTaskToBack` 时 Dart 与网络仍可执行；进度通知与 `piggy_auto_billing` 渠道同 id（1001）。分享入账：**Relay 拷图成功即同 id 直发进度并起 FGS**（早于 Dart / 早于主界面闪现，ADR-063），且 **等 `startForeground`（或短超时）后再进 MainActivity**（ADR-069，避免冷启空窗），且须在 `moveTaskToBack` **之前**已持有 FGS（ADR-054）。普通 `start`/`update` 亦先直发再 `startForegroundService`。Dart `isActive` 须与原生对齐，批次结束再 `stop`。传输失败且当时 App 不在前台：入本机队列记 **阻塞**（不入失败张）；批次结果通知按上款写出阻塞段。`resumed` 时进度（不横幅）「识别继续」/「继续调用AI分析」，再 `retryPendingOnResume` 串行重跑；跑完用同 result id **替换**为新的「识别结果」横幅。
 
-**截图稳定期 + 替换关联窗（ADR-045 / ADR-048 / ADR-064）：** 稳定期默认 **3s**（自该路径最近变更；同路径再 `onChange` / `IS_PENDING` / size 变 → 重置）。**替换关联窗 15s 自最近一次稳定期满起算**（编辑重置会推迟起算），处理「另存新文件名 + 删原图」。另有 **候选总时限 2 分钟**（自首次检出硬切，超时取消并通知）。稳定期满且尚无第二张可发早期进度，但 **Vision/落库须过入账门闩**（关联窗满或替换/连拍判定结束）。窗内原仍在又来新图 → 短观察 **2s**（旧消失=替换，仍在=连拍）。替换后新文件只再走 3s 稳定期。删除且内存无后继 → **删原补扫**（同目录 + 截图关键词 + DATE_ADDED ±15s）再认；仍无则取消并通知「截图已取消，未入账」。**非候选过滤**：`IS_TRASHED`、path/name 含 trash、DISPLAY_NAME 含 `@delete`（如 `gallery@delete`）的行不进稳定期（短日志，不入候选）；删原补扫同样跳过。稳定期/门闩前不入已处理集。连拍各路径独立；Vision 仍串行。分享入账、前台选图不走上述窗口。
+**截图关联窗（ADR-068；废止独立稳定期 / 2min 总时限 / ±15s 删原补扫）：** 检出即开 **15s 关联窗**（自首次检出）并早期进度（**原生立刻起 FGS**「检测到截图」，Dart 再对齐 `isActive`）；同路径不重置时钟（名称+size 未变则忽略）；门闩读当前磁盘文件。窗内原仍在又来新图 → **短观察 2s**（旧消失=替换，仍在=连拍）。删原且内存无后继 → **删原短等 2s** 等新候选（来了=替换，超时取消并通知「截图已取消，未入账」）。**真替换立刻入账门闩**。废止 DATE_ADDED±15s 当场捞盘补扫与候选 2min 硬切。**非候选过滤**：`IS_TRASHED`、path/name 含 trash、DISPLAY_NAME 含 `@delete` 不入候选（短日志）。门闩前不入已处理集。连拍各路径独立；Vision 仍串行。分享入账、前台选图不走上述窗口。程序日志时长用 **s**。
 
-Android：`ScreenshotObserver`（MediaStore + 稳定期 + 替换关联）。iOS：仅快捷指令引导。
+Android：`ScreenshotObserver`（MediaStore + **监听目录∩关键词** + 关联窗 + 短观察 + 删原短等；ADR-070）。**首次**开开关做目录发现扫描后进入目录页（再次开启保留已存列表，不自动重扫）；空列表不注册 Observer，监听目录行**副标题**红字「不可用，未配置监听目录」。iOS：保持原样（快捷指令引导；无监听目录入口）。
 
 ### 关键规则
 
@@ -342,7 +343,7 @@ Android：`ScreenshotObserver`（MediaStore + 稳定期 + 替换关联）。iOS�
 
 ### 代码
 
-`auto_billing_service.dart` · `billing_notification_service.dart` · `pending_billing_retry_store.dart` · `foreground_billing_bridge.dart` · `image_share_handler.dart` · `share_early_progress_gate.dart` · `screenshot_monitor_service.dart` · `android_activity_bridge.dart` · Native `AutoBillingForegroundService.kt` · `ShareRelayActivity.kt` · `SharedImageIngress.kt` · `ScreenshotObserver.kt` · `MainActivity` activity channel · `speech_asr_service.dart` · `speech_engine_preference.dart` · `offline_asr_model_store.dart` · `voice_recognition_session.dart` · `voice_audio_recorder.dart` · `bill_select_tile.dart`
+`auto_billing_service.dart` · `billing_notification_service.dart` · `pending_billing_retry_store.dart` · `foreground_billing_bridge.dart` · `image_share_handler.dart` · `share_early_progress_gate.dart` · `screenshot_monitor_service.dart` · `android_activity_bridge.dart` · Native `AutoBillingForegroundService.kt` · `ShareRelayActivity.kt` · `SharedImageIngress.kt` · `ScreenshotObserver.kt` · `MainActivity` activity channel · `speech_engine_preference.dart` · `offline_asr_model_store.dart` · `voice_recognition_session.dart` · `voice_audio_recorder.dart` · `bill_select_tile.dart`
 
 ---
 
@@ -462,7 +463,7 @@ Android：`ScreenshotObserver`（MediaStore + 稳定期 + 替换关联）。iOS�
 
 关于页入口（与使用教程同级）。关键节点 + 未捕获异常；48h + ≤2000 条。
 
-**节点域：** 启动失败；AI/测连失败与未就绪；**AI 每次生产请求（tag `AI`：调用 provider+model；Vision 回退时 3s 后重试 / 切换服务商，ADR-053）**；云同步；CSV；截图/分享/拍照选图失败；**截图稳定期/关联窗状态跃迁**（tag `Screenshot`：开始等待 / 变动重置 / 候选取消 / 非候选过滤 / 短观察结论 / 替换 / 门闩通过或失败 / 总时限 / 删原补扫；不含门闩心跳与「已静止」细拍，ADR-065）。普通记账成功不打点。禁写 Key/Secret/整份 CSV。临时联调 tag（如曾用的 `ShareProgress`）不得合入发布默认路径。
+**节点域：** 启动失败；AI/测连失败与未就绪；**AI 每次生产请求（tag `AI`：调用 provider+model；Vision 回退时 3s 后重试 / 切换服务商，ADR-053）**；云同步；CSV；截图/分享/拍照选图失败；**截图关联窗状态跃迁**（tag `Screenshot`：关联窗检出 / 同路径忽略或不重置 / 非候选过滤 / 短观察开始与结论 / 删原短等 / 替换立刻入账 / 门闩通过或失败 / 候选取消；不含门闩心跳，ADR-065 / **068**）。普通记账成功不打点。禁写 Key/Secret/整份 CSV。临时联调 tag（如曾用的 `ShareProgress`）不得合入发布默认路径。
 
 导出：Android `Download/PiggyCount/`；iOS 分享。教程本轮不介绍日志。教程在关于页内可展开章节。
 
@@ -561,10 +562,10 @@ flutter build apk --release --split-per-abi
 | 039 / 0039 / 040 | 备注层 / 播种一次 / 弹层限高 | 039≠0039 |
 | 041 / 042 / 043 | 拆页；工作区合并；映射自动/忽略 | |
 | 044 | 账单身份与指纹分离 | 身份 UUID；指纹去重；预览折合；墓碑 90 天 |
-| 045 | 截图稳定期 | 安静等待；结束前不入已处理集；删除可取消；仅 Android 截图自动（时长与入账时机见 **048** / **064**） |
+| 045 | 截图稳定期 | **部分废止见 068**；原安静等待模型 |
 | 046 | 用户可见统计排除墓碑 | 报表/小组件/AI 只计存活；删除确认「删除后不可恢复」 |
 | 047 | AI 分类消歧 | Prompt 主类分组 +「主类-子类」；匹配兼容裸名；展示仍裸名 |
-| 048 | 截图替换关联窗 | 稳定期 3s + 关联窗 15s；进度可早、落库门闩晚；短观察 2s；另存新文件+删原；**起算与补扫见 064** |
+| 048 | 截图替换关联窗 | **部分废止见 068**；原稳定期+关联窗双阶段 |
 | 049 | 下线 AI 智能助手 | 报表球/对话/开关移除；扇形与后台直存保留 |
 | 050 | 待核对账单 | 高亮仅前台；信封持久+红点+一键已读；screenshot/share；syncId；仅明细 |
 | 051 | 记一笔时间选择 | 弃用系统表盘；Dialog 双输入 + 0–23 / 每 5 分快捷格 |
@@ -580,5 +581,10 @@ flutter build apk --release --split-per-abi
 | 061 | 收支速览热区 | 金额热区=隐私切换；去眼睛；中号「+」记支出、柱图报表近 7 日、其余浮卡区明细 |
 | 062 | 中号跟槽渲图 | 渲图宽 max(上报,320,364,格网估宽)；单候选直取、多候选优先面积；options 未就绪保留上次槽；纵向 `10:162:10`；全量 options / onResume diag 已废（见 **065**） |
 | 063 | 分享入账早期 FGS | Relay 即 FGS；去 notify delay；Dart startForegroundService；已收到最短 1s；见 `docs/adr/063-*.md` |
-| 064 | 截图关联窗起算与补扫 | 关联窗自稳定期满起算；总时限 2min 硬切；删原补扫 ±15s；取消统一通知；部分取代 **048** |
+| 064 | 截图关联窗起算与补扫 | **部分废止见 068**；原自稳定期满起算 + 2min + ±15s 补扫 |
 | 065 | 日志去掉临时排障面 | 删 `ShareProgress` / Widget options dump；截图 settle 仅状态跃迁；FGS/ShareRelay/语音音频只留失败日志；见 `docs/adr/065-*.md` |
+| 066 | 分享 / FGS 去冗余 | 删旧单路径 API；start≡update；文案单源；分享不二次截断；MainActivity 直收 SEND 保留；见 `docs/adr/066-*.md` |
+| 067 | 废止系统 ASR | 默认未启用；见 `docs/adr/067-*.md` |
+| 068 | 截图单关联窗 | 废独立稳定期与 2min/±15s 补扫；15s 窗+短观察+删原短等；替换即门闩；见 `docs/adr/068-*.md` |
+| 069 | 分享冷启早期进度必现 | `start` 先同 id 直发再 FGS；Relay `startForShareIngress` 等 startForeground（≤1.5s）再进主界面；见 `docs/adr/069-*.md` |
+| 070 | 截图监听目录 | Android：首次开启发现→进目录页；目录∩关键词；空列表不注册 Observer+红字；重扫整表替换+确认；iOS 不变；见 `docs/adr/070-*.md` |

@@ -11,17 +11,17 @@ import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
 import java.io.File
-import kotlin.math.min
 
 /**
- * MediaStore ContentObserver：截图稳定期 + 替换关联窗（ADR-045 / ADR-048 / ADR-064）。
+ * MediaStore ContentObserver：单关联窗 + 短观察 + 删原短等（ADR-068；取代 045/048/064 中稳定期与 ±15s 补扫）。
  *
- * - 稳定期 3s：写稳 / 快捷进编辑；同路径变更重置；可发早期进度，不落库。
- * - 关联窗 15s：自**最近一次稳定期满**起算；另存新文件+删原；窗满（或替换/连拍已决）才回调 Dart 入账。
- * - 候选总时限 2min：自首次检出硬切，超时取消并通知。
+ * - 关联窗 15s：自首次检出起算；同路径不重置；检出即原生 FGS 早期进度，窗满才回调 Dart 入账。
+ * - 同路径再 offer：名称+size 未变则忽略；有变也不重置时钟（门闩读当前磁盘文件）。
  * - 短观察 2s：原仍在又来新图 → 旧消失=替换，仍在=连拍。
- * - 删原补扫：原不在且无后继时，同目录 + 关键词 + ±15s 再认一张。
- * - 非候选过滤：回收站 / IS_TRASHED / trash·@delete 编码名不进稳定期。
+ * - 删原短等 2s：原不在且内存无后继 → 等新候选；来了=替换，超时取消。
+ * - 真替换：立刻入账门闩（不再等剩余关联窗）。
+ * - 非候选过滤：回收站 / IS_TRASHED / trash·@delete 编码名不进候选。
+ * - 监听目录 ∩ 关键词（ADR-070）：空目录时不应注册本 Observer。
  */
 class ScreenshotObserver(
     private val context: Context,
@@ -29,30 +29,24 @@ class ScreenshotObserver(
     private val onScreenshotProgress: (String) -> Unit = {},
     private val onScreenshotSuperseded: (oldPath: String, newPath: String) -> Unit = { _, _ -> },
     private val onScreenshotCancelled: (String) -> Unit = {},
-    private val onSettleLog: (String) -> Unit = {},
+    private val     onSettleLog: (String) -> Unit = {},
+    initialWatchDirectories: Collection<String> = emptyList(),
 ) : ContentObserver(Handler(Looper.getMainLooper())) {
 
     companion object {
         private const val TAG = "PiggyScreenshot"
-        private val KEYWORDS = listOf(
-            "screenshot", "截屏", "截图", "screen_shot", "screen shot"
-        )
         private const val MAX_AGE_SECONDS = 30L
         private const val PREFS = "piggy_screenshot_monitor"
         private const val KEY_PATHS = "processed_paths"
         private const val MAX_PATHS = 200
         private const val RETRY_MS = 600L
         private const val MAX_ATTEMPTS = 6
-        /** 自该路径最近变更起的安静期。 */
-        private const val SETTLE_MS = 3000L
-        /** 自最近一次稳定期满起的替换关联窗（ADR-064）。 */
+        /** 自首次检出起的替换关联窗（ADR-068）。 */
         private const val ASSOC_MS = 15000L
-        /** 自首次检出起的候选总时限（ADR-064）。 */
-        private const val CAP_MS = 120_000L
         /** 原仍在 + 新图出现时的短观察。 */
         private const val OBSERVE_MS = 2000L
-        /** 删原补扫：新图 DATE_ADDED 相对「现在」的近时窗。 */
-        private const val RESCAN_SLACK_SEC = 15L
+        /** 删原且内存无后继时，等待新候选出现。 */
+        private const val DELETE_WAIT_MS = 2000L
     }
 
     private data class Candidate(
@@ -60,24 +54,14 @@ class ScreenshotObserver(
         val name: String,
         var lastSize: Long,
         val firstSeenAt: Long,
-        /** 替换得到的后继：只再走稳定期，不开满关联窗。 */
-        var skipAssocWindow: Boolean = false,
-        var settleQuiet: Boolean = false,
-        /** 最近一次进入静止的时间；未静止为 0。 */
-        var settleQuietAt: Long = 0L,
         var progressSent: Boolean = false,
-        var settleRunnable: Runnable? = null,
+        /** 删原短等中：文件已不在，等新 path。 */
+        var awaitingSuccessor: Boolean = false,
         var gateRunnable: Runnable? = null,
-        var capRunnable: Runnable? = null,
         var observeRunnable: Runnable? = null,
+        var deleteWaitRunnable: Runnable? = null,
         /** 短观察中的对端路径。 */
         var observingPeer: String? = null,
-    )
-
-    private data class RescanHit(
-        val path: String,
-        val name: String,
-        val size: Long,
     )
 
     private val prefs: SharedPreferences =
@@ -87,12 +71,22 @@ class ScreenshotObserver(
     private val pendingRetries = mutableSetOf<String>()
     private val candidates = mutableMapOf<String, Candidate>()
     private var lastAcceptedAt = 0L
+    private val watchDirectories = initialWatchDirectories
+        .mapNotNull { ScreenshotWatchPaths.normalize(it) }
+        .toMutableSet()
 
     init {
         val raw = prefs.getString(KEY_PATHS, null)
         if (raw != null) {
             processed.addAll(raw.split("|").filter { it.isNotEmpty() })
         }
+    }
+
+    /** 热更新监听目录；返回更新后是否仍有有效目录。 */
+    fun setWatchDirectories(dirs: Collection<String>): Boolean {
+        watchDirectories.clear()
+        watchDirectories.addAll(dirs.mapNotNull { ScreenshotWatchPaths.normalize(it) })
+        return watchDirectories.isNotEmpty()
     }
 
     fun dispose() {
@@ -191,9 +185,7 @@ class ScreenshotObserver(
     }
 
     private fun offerCandidate(path: String, name: String, size: Long, trashed: Boolean = false) {
-        val lowerPath = path.lowercase()
-        val lowerName = name.lowercase()
-        val keywordHit = KEYWORDS.any { lowerPath.contains(it) || lowerName.contains(it) }
+        val keywordHit = ScreenshotWatchPaths.keywordHit(path, name)
         if (ScreenshotNonCandidate.matches(path, name, trashed)) {
             if (keywordHit) {
                 settleLog("非候选：trash/已删 file=$name")
@@ -204,11 +196,13 @@ class ScreenshotObserver(
             return
         }
         if (!keywordHit) return
+        if (watchDirectories.isEmpty()) return
+        if (!ScreenshotWatchPaths.matches(path, watchDirectories)) return
         if (processed.contains(path)) return
 
         val existing = candidates[path]
         if (existing != null) {
-            resetSettle(existing, size, reason = "变动重置")
+            handleSamePathOffer(existing, name, size)
             return
         }
 
@@ -220,135 +214,71 @@ class ScreenshotObserver(
             firstSeenAt = now,
         )
         candidates[path] = c
-        scheduleSettle(c)
-        scheduleCap(c)
+
+        val waiter = candidates.values.firstOrNull {
+            it.path != path && it.awaitingSuccessor
+        }
+        if (waiter != null) {
+            settleLog("删原短等：命中后继 file=$name ← ${waiter.name}")
+            applyReplace(oldPath = waiter.path, new = c)
+            return
+        }
+
         settleLog(
-            "稳定期：检测到新截图，等待 ${SETTLE_MS}ms 静止；关联窗 ${ASSOC_MS}ms（自稳定期满）；" +
-                "总时限 ${CAP_MS}ms file=$name size=$size",
+            "关联窗：检测到新截图，等待 ${ASSOC_MS / 1000}s；" +
+                "短观察/删原短等各 ${OBSERVE_MS / 1000}s file=$name size=$size",
         )
+        emitEarlyProgress(c)
 
         for (other in candidates.values.toList()) {
             if (other.path == path) continue
-            if (!withinCap(other, now) && !other.skipAssocWindow) continue
+            if (other.awaitingSuccessor) continue
             if (!fileAlive(other.path)) continue
             beginObservation(other, c)
-            break
-        }
-    }
-
-    /** 候选仍在总时限内，可与新图做短观察 / 后继关联（ADR-064）。 */
-    private fun withinCap(c: Candidate, now: Long = System.currentTimeMillis()): Boolean {
-        return now - c.firstSeenAt <= CAP_MS
-    }
-
-    private fun resetSettle(c: Candidate, size: Long, reason: String) {
-        c.lastSize = size
-        c.settleQuiet = false
-        c.settleQuietAt = 0L
-        c.settleRunnable?.let { handler.removeCallbacks(it) }
-        c.gateRunnable?.let { handler.removeCallbacks(it) }
-        c.gateRunnable = null
-        scheduleSettle(c)
-        settleLog(
-            "稳定期：$reason，重置计时 ${SETTLE_MS}ms file=${c.name} size=$size",
-        )
-    }
-
-    private fun scheduleSettle(c: Candidate) {
-        val r = Runnable { onSettleDue(c.path) }
-        c.settleRunnable = r
-        handler.postDelayed(r, SETTLE_MS)
-    }
-
-    private fun scheduleCap(c: Candidate) {
-        c.capRunnable?.let { handler.removeCallbacks(it) }
-        val remaining = (c.firstSeenAt + CAP_MS) - System.currentTimeMillis()
-        if (remaining <= 0L) {
-            onCapDue(c.path)
             return
-        }
-        val r = Runnable { onCapDue(c.path) }
-        c.capRunnable = r
-        handler.postDelayed(r, remaining)
-    }
-
-    private fun onCapDue(path: String) {
-        val c = candidates[path] ?: return
-        settleLog("总时限：${CAP_MS}ms 到期，取消 file=${c.name}")
-        cancelWithNotify(path)
-    }
-
-    private fun onSettleDue(path: String) {
-        val c = candidates[path] ?: return
-        if (processed.contains(path)) {
-            dropCandidate(path)
-            return
-        }
-
-        val file = File(path)
-        if (!file.exists() || file.length() <= 0L) {
-            settleLog("稳定期：截图已不存在，取消 file=${c.name}")
-            handleMissing(path)
-            return
-        }
-
-        val len = file.length()
-        if (len != c.lastSize && c.lastSize > 0L) {
-            c.lastSize = len
-            scheduleSettle(c)
-            settleLog(
-                "稳定期：文件大小仍在变化，延长 ${SETTLE_MS}ms file=${c.name} size=$len",
-            )
-            return
-        }
-
-        c.settleQuiet = true
-        c.settleQuietAt = System.currentTimeMillis()
-
-        if (c.observingPeer != null) {
-            return
-        }
-
-        if (c.skipAssocWindow) {
-            tryAccept(c)
-            return
-        }
-
-        if (!c.progressSent && !hasPeerInAssoc(c)) {
-            c.progressSent = true
-            try {
-                onScreenshotProgress(path)
-            } catch (e: Exception) {
-                Log.e(TAG, "onScreenshotProgress failed", e)
-            }
         }
 
         scheduleGate(c)
     }
 
-    private fun hasPeerInAssoc(c: Candidate): Boolean {
-        val now = System.currentTimeMillis()
-        return candidates.values.any { other ->
-            other.path != c.path &&
-                fileAlive(other.path) &&
-                (withinCap(c, now) || withinCap(other, now) || other.skipAssocWindow)
+    private fun handleSamePathOffer(existing: Candidate, name: String, size: Long) {
+        if (existing.awaitingSuccessor) {
+            if (fileAlive(existing.path)) {
+                existing.awaitingSuccessor = false
+                existing.deleteWaitRunnable?.let { handler.removeCallbacks(it) }
+                existing.deleteWaitRunnable = null
+                existing.lastSize = size
+                settleLog("删原短等：原路径恢复，继续关联窗 file=${existing.name}")
+                scheduleGate(existing)
+            }
+            return
+        }
+        if (existing.name == name && existing.lastSize == size) {
+            settleLog("同路径：忽略（名称与大小未变）file=$name size=$size")
+            return
+        }
+        existing.lastSize = size
+        settleLog("同路径：不重置关联窗 file=$name size=$size")
+    }
+
+    private fun emitEarlyProgress(c: Candidate) {
+        if (c.progressSent) return
+        c.progressSent = true
+        try {
+            onScreenshotProgress(c.path)
+        } catch (e: Exception) {
+            Log.e(TAG, "onScreenshotProgress failed", e)
         }
     }
 
     private fun scheduleGate(c: Candidate) {
         c.gateRunnable?.let { handler.removeCallbacks(it) }
-        if (c.skipAssocWindow) {
-            onGateDue(c.path)
-            return
-        }
-        if (!c.settleQuiet || c.settleQuietAt <= 0L) {
-            return
-        }
+        c.gateRunnable = null
+        if (c.awaitingSuccessor) return
+        if (c.observingPeer != null) return
+
         val now = System.currentTimeMillis()
-        val assocDeadline = c.settleQuietAt + ASSOC_MS
-        val capDeadline = c.firstSeenAt + CAP_MS
-        val deadline = min(assocDeadline, capDeadline)
-        val remaining = deadline - now
+        val remaining = (c.firstSeenAt + ASSOC_MS) - now
         if (remaining <= 0L) {
             onGateDue(c.path)
             return
@@ -360,12 +290,8 @@ class ScreenshotObserver(
 
     private fun onGateDue(path: String) {
         val c = candidates[path] ?: return
-        if (c.observingPeer != null) {
-            return
-        }
-        if (!c.settleQuiet) {
-            return
-        }
+        if (c.observingPeer != null) return
+        if (c.awaitingSuccessor) return
         tryAccept(c)
     }
 
@@ -382,6 +308,8 @@ class ScreenshotObserver(
         b.gateRunnable?.let { handler.removeCallbacks(it) }
         a.gateRunnable = null
         b.gateRunnable = null
+
+        settleLog("短观察：开始 ${OBSERVE_MS / 1000}s a=${a.name} b=${b.name}")
 
         val r = Runnable { resolveObservation(a.path, b.path) }
         a.observeRunnable = r
@@ -408,8 +336,8 @@ class ScreenshotObserver(
     private fun resolveObservation(pathA: String, pathB: String) {
         val a = candidates[pathA]
         val b = candidates[pathB]
-        val aAlive = a != null && fileAlive(pathA)
-        val bAlive = b != null && fileAlive(pathB)
+        val aAlive = a != null && !a.awaitingSuccessor && fileAlive(pathA)
+        val bAlive = b != null && !b.awaitingSuccessor && fileAlive(pathB)
 
         if (a != null) clearObservation(a)
         if (b != null) clearObservation(b)
@@ -417,8 +345,8 @@ class ScreenshotObserver(
         when {
             aAlive && bAlive -> {
                 settleLog("短观察：两张都在 → 连拍 a=${a!!.name} b=${b!!.name}")
-                if (a.settleQuiet) scheduleGate(a)
-                if (b.settleQuiet) scheduleGate(b)
+                scheduleGate(a)
+                scheduleGate(b)
             }
             !aAlive && bAlive -> {
                 settleLog("短观察：a 消失 → 替换为 b=${b!!.name}")
@@ -442,21 +370,20 @@ class ScreenshotObserver(
             clearTimers(old)
             candidates.remove(oldPath)
         }
-        settleLog("替换：取消旧文件，新文件只再走稳定期 ${SETTLE_MS}ms file=${new.name}")
+        settleLog("替换：立刻入账 file=${new.name}")
         try {
             onScreenshotSuperseded(oldPath, new.path)
         } catch (e: Exception) {
             Log.e(TAG, "onScreenshotSuperseded failed", e)
         }
 
-        new.skipAssocWindow = true
-        new.settleQuiet = false
-        new.settleQuietAt = 0L
-        new.progressSent = false
+        new.awaitingSuccessor = false
         clearObservation(new)
         new.gateRunnable?.let { handler.removeCallbacks(it) }
         new.gateRunnable = null
-        resetSettle(new, new.lastSize, reason = "替换后重等")
+        new.deleteWaitRunnable?.let { handler.removeCallbacks(it) }
+        new.deleteWaitRunnable = null
+        tryAccept(new)
     }
 
     private fun tryAccept(c: Candidate) {
@@ -464,12 +391,12 @@ class ScreenshotObserver(
             dropCandidate(c.path)
             return
         }
+        if (c.awaitingSuccessor) return
         if (!fileAlive(c.path)) {
-            settleLog("门闩：文件已不存在，尝试补扫 file=${c.name}")
+            settleLog("门闩：文件已不存在 file=${c.name}")
             handleMissing(c.path)
             return
         }
-        if (!c.settleQuiet) return
         if (c.observingPeer != null) return
 
         val now = System.currentTimeMillis()
@@ -500,7 +427,11 @@ class ScreenshotObserver(
     }
 
     private fun pruneMissingCandidates() {
-        val gone = candidates.keys.filter { !fileAlive(it) }
+        val gone = candidates.keys.filter { path ->
+            val c = candidates[path] ?: return@filter false
+            if (c.awaitingSuccessor) return@filter false
+            !fileAlive(path)
+        }
         for (path in gone) {
             handleMissing(path)
         }
@@ -508,10 +439,12 @@ class ScreenshotObserver(
 
     private fun handleMissing(path: String) {
         val c = candidates[path] ?: return
+        if (c.awaitingSuccessor) return
+
         val peerPath = c.observingPeer
         if (peerPath != null) {
             val peer = candidates[peerPath]
-            if (peer != null && fileAlive(peerPath)) {
+            if (peer != null && fileAlive(peerPath) && !peer.awaitingSuccessor) {
                 settleLog("删除：观察中旧图消失 → 立即按替换处理 file=${c.name}")
                 clearObservation(c)
                 clearObservation(peer)
@@ -520,101 +453,53 @@ class ScreenshotObserver(
             }
         }
 
-        val now = System.currentTimeMillis()
         val successor = candidates.values
             .filter {
                 it.path != path &&
+                    !it.awaitingSuccessor &&
                     fileAlive(it.path) &&
-                    it.firstSeenAt >= c.firstSeenAt &&
-                    (withinCap(c, now) || withinCap(it, now) || it.skipAssocWindow)
+                    it.firstSeenAt >= c.firstSeenAt
             }
             .maxByOrNull { it.firstSeenAt }
 
         if (successor != null) {
-            settleLog("删除：关联窗内有后继 → 替换为 file=${successor.name}")
+            settleLog("删除：内存有后继 → 替换为 file=${successor.name}")
             applyReplace(oldPath = path, new = successor)
             return
         }
 
-        val hit = rescanNearbyScreenshot(c)
-        if (hit != null) {
-            settleLog("删原补扫：命中 file=${hit.name}")
-            val existing = candidates[hit.path]
-            val newC = existing ?: Candidate(
-                path = hit.path,
-                name = hit.name,
-                lastSize = hit.size,
-                firstSeenAt = System.currentTimeMillis(),
-            ).also {
-                candidates[it.path] = it
-                scheduleCap(it)
-            }
-            applyReplace(oldPath = path, new = newC)
-            return
-        }
-
-        settleLog("删除：无后继，取消入账 file=${c.name}")
-        cancelWithNotify(path)
+        startDeleteWait(c)
     }
 
-    /**
-     * 原图已不在且内存无后继：同目录、截图关键词、DATE_ADDED 相对现在 ±15s 的最新一张。
-     */
-    private fun rescanNearbyScreenshot(old: Candidate): RescanHit? {
-        val oldDir = try {
-            File(old.path).parentFile?.canonicalPath
-        } catch (_: Exception) {
-            null
-        } ?: return null
+    private fun startDeleteWait(c: Candidate) {
+        c.gateRunnable?.let { handler.removeCallbacks(it) }
+        c.gateRunnable = null
+        clearObservation(c)
+        c.awaitingSuccessor = true
+        c.deleteWaitRunnable?.let { handler.removeCallbacks(it) }
+        settleLog("删原短等：等待 ${DELETE_WAIT_MS / 1000}s 内出现新截图 file=${c.name}")
+        val r = Runnable { onDeleteWaitDue(c.path) }
+        c.deleteWaitRunnable = r
+        handler.postDelayed(r, DELETE_WAIT_MS)
+    }
 
-        val nowSec = System.currentTimeMillis() / 1000
-        val minSec = nowSec - RESCAN_SLACK_SEC
-        val maxSec = nowSec + RESCAN_SLACK_SEC
-        try {
-            val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
-            } else {
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+    private fun onDeleteWaitDue(path: String) {
+        val c = candidates[path] ?: return
+        if (!c.awaitingSuccessor) return
+        val successor = candidates.values
+            .filter {
+                it.path != path &&
+                    !it.awaitingSuccessor &&
+                    fileAlive(it.path)
             }
-            val cursor = context.contentResolver.query(
-                uri,
-                projection(),
-                "${MediaStore.Images.Media.DATE_ADDED} >= ? AND ${MediaStore.Images.Media.DATE_ADDED} <= ?",
-                arrayOf(minSec.toString(), maxSec.toString()),
-                "${MediaStore.Images.Media.DATE_ADDED} DESC"
-            )
-            cursor?.use {
-                val pathIdx = it.getColumnIndex(MediaStore.Images.Media.DATA)
-                val nameIdx = it.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
-                val sizeIdx = it.getColumnIndex(MediaStore.Images.Media.SIZE)
-                if (pathIdx < 0 || nameIdx < 0) return null
-                while (it.moveToNext()) {
-                    val path = it.getString(pathIdx) ?: continue
-                    if (path == old.path) continue
-                    if (processed.contains(path)) continue
-                    val name = it.getString(nameIdx) ?: ""
-                    if (isPending(path, name, readPending(it))) continue
-                    if (ScreenshotNonCandidate.matches(path, name, readTrashed(it))) continue
-                    val lowerPath = path.lowercase()
-                    val lowerName = name.lowercase()
-                    if (KEYWORDS.none { k -> lowerPath.contains(k) || lowerName.contains(k) }) {
-                        continue
-                    }
-                    val dir = try {
-                        File(path).parentFile?.canonicalPath
-                    } catch (_: Exception) {
-                        null
-                    } ?: continue
-                    if (dir != oldDir) continue
-                    if (!fileAlive(path)) continue
-                    val size = if (sizeIdx >= 0) it.getLong(sizeIdx) else fileSize(path)
-                    return RescanHit(path = path, name = name, size = size)
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "rescanNearbyScreenshot failed", e)
+            .maxByOrNull { it.firstSeenAt }
+        if (successor != null) {
+            settleLog("删原短等：到期命中后继 file=${successor.name}")
+            applyReplace(oldPath = path, new = successor)
+            return
         }
-        return null
+        settleLog("删原短等：超时无后继，取消 file=${c.name}")
+        cancelWithNotify(path)
     }
 
     private fun cancelWithNotify(path: String) {
@@ -633,13 +518,12 @@ class ScreenshotObserver(
     }
 
     private fun clearTimers(c: Candidate) {
-        c.settleRunnable?.let { handler.removeCallbacks(it) }
         c.gateRunnable?.let { handler.removeCallbacks(it) }
-        c.capRunnable?.let { handler.removeCallbacks(it) }
+        c.deleteWaitRunnable?.let { handler.removeCallbacks(it) }
         clearObservation(c)
-        c.settleRunnable = null
         c.gateRunnable = null
-        c.capRunnable = null
+        c.deleteWaitRunnable = null
+        c.awaitingSuccessor = false
     }
 
     private fun fileAlive(path: String): Boolean {
@@ -652,7 +536,6 @@ class ScreenshotObserver(
     }
 
     private fun settleLog(message: String) {
-        Log.i(TAG, message)
         try {
             onSettleLog(message)
         } catch (e: Exception) {
@@ -670,7 +553,6 @@ class ScreenshotObserver(
         if (attempt == 0 && !pendingRetries.add(key)) return
         pendingRetries.add(key)
         handler.postDelayed({ checkUri(uri, next) }, RETRY_MS * next)
-        Log.d(TAG, "retry($reason) #$next $uri")
     }
 
     private fun clearRetry(uri: Uri) {

@@ -13,7 +13,8 @@ void openAiSettings(BuildContext context) {
 bool looksLikeAiSetupError(String message) {
   return message.contains('AI 设置') ||
       message.contains('API Key') ||
-      message.contains('服务商');
+      message.contains('服务商') ||
+      message.contains('未启用');
 }
 
 /// 错误文案旁的「去设置」按钮；非配置类错误返回 null。

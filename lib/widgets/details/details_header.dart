@@ -264,10 +264,18 @@ class MonthSummaryBar extends StatelessWidget {
               child: Row(
                 children: [
                   Expanded(
-                    child: _Metric(label: '收入', value: income),
+                    child: _Metric(
+                      label: '收入',
+                      value: income,
+                      useScaleCompact: true,
+                    ),
                   ),
                   Expanded(
-                    child: _Metric(label: '支出', value: expense),
+                    child: _Metric(
+                      label: '支出',
+                      value: expense,
+                      useScaleCompact: true,
+                    ),
                   ),
                   Expanded(
                     child: _Metric(label: '结余', value: _balance),
@@ -283,18 +291,27 @@ class MonthSummaryBar extends StatelessWidget {
 }
 
 class _Metric extends StatelessWidget {
-  const _Metric({required this.label, required this.value});
+  const _Metric({
+    required this.label,
+    required this.value,
+    this.useScaleCompact = false,
+  });
 
   final String label;
   final double value;
 
+  /// 收入/支出：与收支速览本月档同一刻度（无 ¥）；结余保持原格式。
+  final bool useScaleCompact;
+
   @override
   Widget build(BuildContext context) {
-    final text = value < 0
-        ? (value.abs() >= 100
-            ? value.toStringAsFixed(0)
-            : value.toStringAsFixed(2))
-        : formatMoneyCompact(value);
+    final text = useScaleCompact
+        ? formatMoneyScaleCompact(value)
+        : value < 0
+            ? (value.abs() >= 100
+                ? value.toStringAsFixed(0)
+                : value.toStringAsFixed(2))
+            : formatMoneyCompact(value);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
