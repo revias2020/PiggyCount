@@ -1,5 +1,62 @@
 # 小猪记账 · 升级日志
 
+## 0.5.2
+
+**版本：** `0.5.2+13`  
+**相对：** `0.5.1+12`  
+**日期：** 2026-09-05
+
+### 截图自动：回前台水位线补扫（ADR-074）
+
+开关开启时，`paused` 记录水位 W；`resumed` 按 `DATE_ADDED > max(W, now−24h)` 补扫漏检并立刻门闩（无 W 仍回退近 5 分钟）。不升级后台常驻保活；去重仍靠路径已处理集。
+
+### 直存队列：分享优先于截图（ADR-075）
+
+`share` 插入队首（高于全部 `screenshot`），不打断当前识别；等 inflight 时 FGS 提示「等待当前识别结束后处理分享…」。段中途 flush 结果见 ADR-076 修正。
+
+### 直存通知：FGS 归属与进度相位（ADR-076）
+
+进度/FGS 引用计数持有；关联窗取消不误杀分享保活（仍发取消结果）；补扫独立文案；整批空再出「识别结果」；stop 后再发结果。
+
+### 版本与文档
+
+- `pubspec.yaml` → `0.5.2+13`
+- `docs/development.md` / `docs/framework.md` / `CONTEXT.md`：ADR-074 / ADR-075 / ADR-076
+- `docs/adr/074-screenshot-resume-watermark-scan.md`；`docs/adr/075-autobilling-share-priority-queue.md`；`docs/adr/076-autobilling-notification-ownership.md`
+- 本机 `venv/APK` 留 split-per-abi 全套（`PiggyCount-0.5.2+13-*.apk`）
+
+---
+
+## 0.5.1
+
+**版本：** `0.5.1+12`  
+**相对：** `0.5.0+11`  
+**日期：** 2026-09-04
+
+### 应用内轻提示 PigToast（ADR-071）
+
+纯文案反馈由贴底 SnackBar 改为居中偏下白胶囊 Overlay（最宽 80%、可多行不省略、约 2s / 可点关、同时一条）；模态确认底栏打开时仍可见。需「去设置」等操作的改为 Dialog。见 `docs/glossary.md`。
+
+### 后台 Vision：每服务商仅一次（ADR-072）
+
+截图自动 / 分享直存的 Vision 回退与前台对齐：每个已测通服务商只调 1 次，失败立即换下一候选；取消同商等待 3s 再打。传输 / API 判定与阻塞队列（「打开 App 后继续」）不变。
+
+### 监听目录列表：展示用绝对路径（ADR-070）
+
+目录详情每行主标题仍为相对键；副标题灰字（`textTertiary`）为运行时主外部存储根拼出的绝对路径，不省略。仅展示，不改持久化与匹配。
+
+### 版本与文档
+
+- `pubspec.yaml` → `0.5.1+12`
+- `docs/development.md`：ADR-071 / ADR-072 索引与关键规则；ADR-070 列表副标题；`docs/version.md` / README 版本号
+- `docs/adr/072-background-vision-once-per-provider.md`
+
+### 不受影响
+
+识别 / 落库 / 阻塞入队语义不变；前台确认弹层未就绪仍只层内「去设置」（ADR-057）。
+
+---
+
 ## 0.5.0
 
 **版本：** `0.5.0+11`  

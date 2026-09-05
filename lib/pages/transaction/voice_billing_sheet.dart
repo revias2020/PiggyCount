@@ -11,6 +11,7 @@ import '../../services/system/logger_service.dart';
 import '../../styles/tokens.dart';
 import '../../widgets/ai/ai_setup_helpers.dart';
 import '../../widgets/ai/bill_confirm_card.dart';
+import '../../widgets/pig_toast.dart';
 
 /// 语音记账确认流：多引擎听写/直接记账 → 用户确认落库（ADR-052 / ADR-067）。
 Future<void> showVoiceBillingSheet(BuildContext context) {
@@ -181,13 +182,12 @@ class _VoiceBillingSheetState extends ConsumerState<_VoiceBillingSheet> {
       final msg = result.skipped > 0
           ? '已存在相同账本、金额与时间的账单'
           : '保存失败';
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      PigToast.show(context, msg);
       return;
     }
+    final overlay = Overlay.of(context, rootOverlay: true);
     Navigator.of(context).pop();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('语音记账已保存')),
-    );
+    PigToast.showOn(overlay, '语音记账已保存');
   }
 
   @override

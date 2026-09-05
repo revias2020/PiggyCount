@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../../services/system/local_export_service.dart';
 import '../../services/system/logger_service.dart';
 import '../../styles/tokens.dart';
+import '../../widgets/pig_toast.dart';
 
 /// 程序日志页：搜索、级别筛选、清空、导出（ADR-014）。
 class ProgramLogPage extends StatefulWidget {
@@ -56,14 +57,10 @@ class _ProgramLogPageState extends State<ProgramLogPage> {
         shareSubject: '小猪记账 · 程序日志',
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result.successMessage)),
-      );
+      PigToast.show(context, result.successMessage);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导出失败：$e')),
-      );
+      PigToast.show(context, '导出失败：$e');
     }
   }
 
@@ -88,9 +85,7 @@ class _ProgramLogPageState extends State<ProgramLogPage> {
     if (ok != true) return;
     await logger.clear();
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('日志已清空')),
-    );
+    PigToast.show(context, '日志已清空');
   }
 
   @override
@@ -232,9 +227,7 @@ class _LogTile extends StatelessWidget {
               Clipboard.setData(
                 ClipboardData(text: entry.toFormattedString()),
               );
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('已复制')),
-              );
+              PigToast.show(context, '已复制');
             },
             child: const Text('复制'),
           ),
@@ -259,9 +252,7 @@ class _LogTile extends StatelessWidget {
           onTap: () => _showDetail(context),
           onLongPress: () {
             Clipboard.setData(ClipboardData(text: entry.toFormattedString()));
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('已复制')),
-            );
+            PigToast.show(context, '已复制');
           },
           child: Padding(
             padding: const EdgeInsets.all(12),

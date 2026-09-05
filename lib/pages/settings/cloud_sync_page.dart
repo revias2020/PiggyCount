@@ -7,6 +7,7 @@ import '../../services/sync/cloud_sync_providers.dart';
 import '../../services/system/logger_service.dart';
 import '../../styles/tokens.dart';
 import '../../widgets/capsule_switcher.dart';
+import '../../widgets/pig_toast.dart';
 
 /// 云服务：WebDAV / S3 连接配置（不含上传/下载）。
 class CloudSyncPage extends ConsumerStatefulWidget {
@@ -93,13 +94,7 @@ class _CloudSyncPageState extends ConsumerState<CloudSyncPage> {
     await store.save(next);
     ref.invalidate(cloudSyncConfigProvider);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          next.isReadyForSync ? '云服务配置已保存' : '云服务配置已保存（尚未测通）',
-        ),
-      ),
-    );
+    PigToast.show(context, next.isReadyForSync ? '云服务配置已保存' : '云服务配置已保存（尚未测通）');
     setState(() {});
   }
 
@@ -115,13 +110,7 @@ class _CloudSyncPageState extends ConsumerState<CloudSyncPage> {
       if (!mounted) return;
       final readyNow = saved.isReadyForSync &&
           draft.connectionFingerprint() == saved.verifiedFingerprint;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            readyNow ? '连接成功' : '连接成功，请点保存以启用同步',
-          ),
-        ),
-      );
+      PigToast.show(context, readyNow ? '连接成功' : '连接成功，请点保存以启用同步');
       setState(() {});
     } catch (e, st) {
       logger.error('Cloud', '连接测试失败', e, st);

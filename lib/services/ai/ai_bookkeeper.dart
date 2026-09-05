@@ -55,12 +55,14 @@ class AiBookkeeper {
   Future<List<BillInfo>> fromImageWithFallback(
     Uint8List bytes, {
     String mimeType = 'image/jpeg',
+    bool recreateHttpClientOnFirstTransport = false,
   }) async {
     final ctx = await creation.buildContext();
     return engine.extractFromImageWithFallback(
       imageBytes: bytes,
       context: ctx,
       mimeType: mimeType,
+      recreateHttpClientOnFirstTransport: recreateHttpClientOnFirstTransport,
     );
   }
 

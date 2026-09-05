@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
 
 import 'package:flutter/widgets.dart';
@@ -11,6 +12,7 @@ import '../ai/ai_bookkeeper.dart';
 import '../platform/android_activity_bridge.dart';
 import '../platform/foreground_billing_bridge.dart';
 import '../system/logger_service.dart';
+import 'billing_image_limits.dart';
 import 'billing_notification_service.dart';
 import 'pending_billing_retry_store.dart';
 import 'vision_image_prep.dart';
@@ -39,6 +41,36 @@ class _BatchTallies {
     blocked = 0;
     failureReasons.clear();
   }
+
+  void copyFrom(_BatchTallies other) {
+    success = other.success;
+    skip = other.skip;
+    successAmount = other.successAmount;
+    blocked = other.blocked;
+    failureReasons
+      ..clear()
+      ..addAll(other.failureReasons);
+  }
+}
+
+class _BillingJob {
+  _BillingJob({
+    required this.imagePath,
+    required this.source,
+    required this.showNotification,
+    required this.autoSave,
+    this.fromRetry = false,
+  });
+
+  final String imagePath;
+  final String source;
+  final bool showNotification;
+  final bool autoSave;
+  /// 来自阻塞队列回前台重试（ADR-076：仅此类 job 用「识别继续」文案）。
+  final bool fromRetry;
+  final Completer<List<int>> done = Completer<List<int>>();
+
+  bool get isShare => source == 'share';
 }
 
 /// 结果正文：省略为 0 的段；阻塞句见纯阻塞 / 「另有」。
@@ -117,35 +149,56 @@ class AutoBillingService {
 
   /// 当前正在 Vision/落库的图片路径（用于替换时取消进度）。
   String? _inflightPath;
+  /// 当前 inflight 的 source（ADR-075 等待提示 / 段切换）。
+  String? _inflightSource;
+  /// 当前 inflight 是否来自阻塞重试（ADR-076）。
+  var _inflightFromRetry = false;
   /// 替换后尚未收到门闩回调的新路径；避免空批次把进度通知清掉。
   String? _awaitingScreenshotPath;
+  /// 关联窗内路径（多候选共用一个 assoc holder；ADR-076）。
+  final Set<String> _assocPaths = {};
 
-  /// 多张串行：后一张等前一张结束（ADR-018）。
-  Future<void> _queue = Future.value();
+  /// 高优先级：share；低优先级：screenshot 等（ADR-075）。
+  final Queue<_BillingJob> _highQueue = Queue<_BillingJob>();
+  final Queue<_BillingJob> _lowQueue = Queue<_BillingJob>();
+  var _pumpRunning = false;
 
-  /// 当前串行批次仍在排队/执行的任务数；归零时刷新结果通知。
-  int _batchInflight = 0;
-  final _BatchTallies _batchTallies = _BatchTallies();
-  /// 本批次附加说明（如多选分享截取，ADR-058）；随结果通知一并展示后清空。
-  String? _pendingBatchNote;
+  final _BatchTallies _screenshotTallies = _BatchTallies();
+  final _BatchTallies _shareTallies = _BatchTallies();
+  /// 记录 tallies 时的 source（由 pump 设置）。
+  String? _recordingSource;
+  /// 分享批次附加说明（如多选截取，ADR-058）；随整批结果通知展示后清空。
+  String? _pendingShareBatchNote;
   var _retryDrainRunning = false;
+
+  static const _shareWaitBody = '等待当前识别结束后处理分享…';
 
   bool _isAppResumed() {
     final state = WidgetsBinding.instance.lifecycleState;
     return state == null || state == AppLifecycleState.resumed;
   }
 
+  _BatchTallies _talliesFor(String? source) =>
+      source == 'share' ? _shareTallies : _screenshotTallies;
+
+  /// 分享插队等待提示（扩 ADR-075 / ADR-076）：inflight 截图、关联窗、或低优队将被挡住。
+  bool _needsShareWaitHint() {
+    return _inflightSource == 'screenshot' ||
+        _assocPaths.isNotEmpty ||
+        ForegroundBillingBridge.hasOwner(BillingFgsOwner.assoc) ||
+        _lowQueue.isNotEmpty;
+  }
+
   Future<void> _showProgress({
     required String title,
     required String body,
   }) async {
-    final t = _retryDrainRunning ? '识别继续' : title;
-    final b = _retryDrainRunning ? '继续调用AI分析' : body;
+    // ADR-076：不再用 _retryDrainRunning 全局劫持文案。
     if (ForegroundBillingBridge.isActive) {
-      await ForegroundBillingBridge.update(title: t, body: b);
+      await ForegroundBillingBridge.update(title: title, body: body);
       return;
     }
-    await notifications.showProgress(title: t, body: b);
+    await notifications.showProgress(title: title, body: body);
   }
 
   Future<void> _cancelProgress() async {
@@ -155,15 +208,47 @@ class AutoBillingService {
 
   Future<void> _startBatchForeground() async {
     if (!Platform.isAndroid) return;
-    if (ForegroundBillingBridge.isActive) return;
-    await ForegroundBillingBridge.start(
-      title: _retryDrainRunning ? '识别继续' : '智能记账',
-      body: _retryDrainRunning ? '继续调用AI分析' : '准备识别…',
+    final keepRetryCopy =
+        ForegroundBillingBridge.hasOwner(BillingFgsOwner.retry);
+    await ForegroundBillingBridge.acquire(
+      BillingFgsOwner.batch,
+      title: keepRetryCopy ? '识别继续' : '智能记账',
+      body: keepRetryCopy ? '继续调用AI分析' : '准备识别…',
+      updateText: !keepRetryCopy,
     );
   }
 
   Future<void> _stopBatchForeground() async {
-    await ForegroundBillingBridge.stop();
+    // ADR-076：整批结束清空全部 holder 再发结果，避免残留 share/assoc。
+    await ForegroundBillingBridge.releaseAll();
+  }
+
+  Future<void> _refreshProgressAfterAssocCancel() async {
+    if (!ForegroundBillingBridge.isActive) return;
+    if (_needsShareWaitHint() &&
+        (ForegroundBillingBridge.hasOwner(BillingFgsOwner.share) ||
+            _highQueue.isNotEmpty)) {
+      await _showProgress(
+        title: kShareBillingProgressTitle,
+        body: _shareWaitBody,
+      );
+      return;
+    }
+    if (ForegroundBillingBridge.hasOwner(BillingFgsOwner.share)) {
+      await _showProgress(
+        title: kShareBillingProgressTitle,
+        body: shareReceivedProgressBody(truncated: false),
+      );
+      return;
+    }
+    if (ForegroundBillingBridge.hasOwner(BillingFgsOwner.retry) ||
+        _inflightFromRetry) {
+      await _showProgress(title: '识别继续', body: '继续调用AI分析');
+      return;
+    }
+    if (_inflightPath != null) {
+      await _showProgress(title: '正在识别', body: 'AI 分析账单中…');
+    }
   }
 
   Future<bool> _maybeEnqueueTransportRetry({
@@ -185,12 +270,12 @@ class AutoBillingService {
       '传输失败已入阻塞队列 source=$source file=${p.basename(imagePath)}',
     );
     if (showNotification) {
-      _batchTallies.blocked++;
+      _talliesFor(source).blocked++;
     }
     return true;
   }
 
-  /// App 回前台时重试后台直存阻塞项（ADR-054）。
+  /// App 回前台时重试后台直存阻塞项（ADR-054 / 076）。
   Future<void> retryPendingOnResume() async {
     if (_retryDrainRunning) return;
     _retryDrainRunning = true;
@@ -198,7 +283,11 @@ class AutoBillingService {
       final items = await _retryStore.load();
       if (items.isEmpty) return;
       logger.info('AutoBilling', '回前台重试 ${items.length} 项');
-      await _showProgress(title: '识别继续', body: '继续调用AI分析');
+      await ForegroundBillingBridge.acquire(
+        BillingFgsOwner.retry,
+        title: '识别继续',
+        body: '继续调用AI分析',
+      );
       for (final item in items) {
         if (!await File(item.imagePath).exists()) {
           await _retryStore.remove(item.imagePath);
@@ -210,17 +299,19 @@ class AutoBillingService {
           source: item.source,
           showNotification: true,
           autoSave: true,
+          fromRetry: true,
         );
       }
     } finally {
       _retryDrainRunning = false;
+      await ForegroundBillingBridge.release(BillingFgsOwner.retry);
     }
   }
 
-  /// 为即将开始的串行批次附加结果通知文案（ADR-058）。
+  /// 为即将开始的分享结果附加通知文案（ADR-058）。
   void setBatchNote(String? note) {
     final t = note?.trim();
-    _pendingBatchNote = (t == null || t.isEmpty) ? null : t;
+    _pendingShareBatchNote = (t == null || t.isEmpty) ? null : t;
   }
 
   Future<void> _ensureCache() async {
@@ -248,36 +339,40 @@ class AutoBillingService {
     required int skip,
     double successAmount = 0,
   }) {
-    _batchTallies.success += success;
-    _batchTallies.skip += skip;
-    _batchTallies.successAmount += successAmount;
+    final t = _talliesFor(_recordingSource);
+    t.success += success;
+    t.skip += skip;
+    t.successAmount += successAmount;
   }
 
   void _recordFailedImage({required String title, required String body}) {
+    final bucket = _talliesFor(_recordingSource);
     final t = title.trim();
     final b = body.trim();
     if (t.isEmpty) {
-      _batchTallies.failureReasons.add(b.isEmpty ? '识别失败' : b);
+      bucket.failureReasons.add(b.isEmpty ? '识别失败' : b);
     } else if (b.isEmpty || b == t) {
-      _batchTallies.failureReasons.add(t);
+      bucket.failureReasons.add(t);
     } else {
-      _batchTallies.failureReasons.add('$t：$b');
+      bucket.failureReasons.add('$t：$b');
     }
   }
 
-  Future<void> _flushBatchResults() async {
-    final t = _BatchTallies()
-      ..success = _batchTallies.success
-      ..skip = _batchTallies.skip
-      ..successAmount = _batchTallies.successAmount
-      ..blocked = _batchTallies.blocked
-      ..failureReasons.addAll(_batchTallies.failureReasons);
-    final batchNote = _pendingBatchNote;
-    _pendingBatchNote = null;
-    _batchTallies.clear();
+  Future<void> _flushTallies(
+    _BatchTallies bucket, {
+    String? batchNote,
+    bool? clearProgress,
+  }) async {
+    final t = _BatchTallies()..copyFrom(bucket);
+    bucket.clear();
 
     if (t.isEmpty) {
-      if (_inflightPath == null && _awaitingScreenshotPath == null) {
+      if (_inflightPath == null &&
+          _awaitingScreenshotPath == null &&
+          _assocPaths.isEmpty &&
+          _highQueue.isEmpty &&
+          _lowQueue.isEmpty &&
+          !_pumpRunning) {
         await _cancelProgress();
       }
       return;
@@ -293,10 +388,13 @@ class AutoBillingService {
     );
     final title = formatAutoBillingResultTitle();
     final opensDetails = autoBillingResultClickSuccess(t.failImages);
+    final shouldClear =
+        clearProgress ?? !ForegroundBillingBridge.isActive;
     await notifications.showResult(
       title: title,
       body: body,
       success: opensDetails,
+      clearProgress: shouldClear,
     );
     if (!opensDetails) {
       notifications.lastFailureTitle = title;
@@ -304,11 +402,51 @@ class AutoBillingService {
     }
   }
 
+  /// ADR-076 方案 A：整批合并一条「识别结果」。
+  Future<void> _flushMergedBatchResult() async {
+    final merged = _BatchTallies()
+      ..success = _shareTallies.success + _screenshotTallies.success
+      ..skip = _shareTallies.skip + _screenshotTallies.skip
+      ..successAmount =
+          _shareTallies.successAmount + _screenshotTallies.successAmount
+      ..blocked = _shareTallies.blocked + _screenshotTallies.blocked;
+    merged.failureReasons
+      ..addAll(_shareTallies.failureReasons)
+      ..addAll(_screenshotTallies.failureReasons);
+    final note = _pendingShareBatchNote;
+    _pendingShareBatchNote = null;
+    _shareTallies.clear();
+    _screenshotTallies.clear();
+    try {
+      await _flushTallies(
+        merged,
+        batchNote: note,
+        clearProgress: !ForegroundBillingBridge.isActive,
+      );
+    } catch (_) {
+      merged.clear();
+    }
+  }
+
   /// 检出即早期进度（关联窗未满；不 Vision / 不落库）。
-  /// 原生已先起 FGS；此处再 [ForegroundBillingBridge.start] 对齐 [_active]（同 ADR-063 分享）。
-  Future<void> showScreenshotEarlyProgress(String imagePath) async {
+  /// 原生已先起 FGS；此处再 [ForegroundBillingBridge.acquire] 对齐持有者（ADR-076）。
+  /// [resume]：回前台补扫，用 batch + 补扫文案，不走 assoc。
+  Future<void> showScreenshotEarlyProgress(
+    String imagePath, {
+    bool resume = false,
+  }) async {
     if (_superseded.contains(imagePath)) return;
-    await ForegroundBillingBridge.start(
+    if (resume) {
+      await ForegroundBillingBridge.acquire(
+        BillingFgsOwner.batch,
+        title: '补扫到截图',
+        body: '正在补识别…',
+      );
+      return;
+    }
+    _assocPaths.add(imagePath);
+    await ForegroundBillingBridge.acquire(
+      BillingFgsOwner.assoc,
       title: '检测到截图',
       body: '等待确认后识别…',
     );
@@ -324,86 +462,177 @@ class AutoBillingService {
       final drop = _superseded.take(20).toList();
       _superseded.removeAll(drop);
     }
+    _assocPaths.remove(oldPath);
+    if (newPath != null && newPath.isNotEmpty) {
+      _assocPaths.add(newPath);
+    }
     _awaitingScreenshotPath = newPath;
+    if (_assocPaths.isEmpty) {
+      await ForegroundBillingBridge.release(BillingFgsOwner.assoc);
+    }
     await _showProgress(
       title: '截图已更新',
       body: '改用编辑后的图片识别…',
     );
   }
 
-  /// 预览删除且删原短等无后继 / 门闩丢原：清进度并结果通知（ADR-068）。
+  /// 预览删除且删原短等无后继 / 门闩丢原：清进度并结果通知（ADR-068 / 076）。
   Future<void> cancelScreenshotProgress(String imagePath) async {
-    if (_superseded.contains(imagePath)) {
-      if (ForegroundBillingBridge.isActive) {
-        await ForegroundBillingBridge.stop();
-      } else {
-        await notifications.cancelProgress();
+    final alreadySuperseded = _superseded.contains(imagePath);
+    if (!alreadySuperseded) {
+      _superseded.add(imagePath);
+      if (_superseded.length > 40) {
+        final drop = _superseded.take(20).toList();
+        _superseded.removeAll(drop);
       }
+      if (_awaitingScreenshotPath == imagePath) {
+        _awaitingScreenshotPath = null;
+      }
+    }
+
+    _assocPaths.remove(imagePath);
+    final keptAlive = ForegroundBillingBridge.hasOwner(BillingFgsOwner.share) ||
+        ForegroundBillingBridge.hasOwner(BillingFgsOwner.retry) ||
+        _pumpRunning ||
+        _highQueue.isNotEmpty ||
+        _lowQueue.isNotEmpty ||
+        _inflightPath != null;
+
+    if (_assocPaths.isEmpty) {
+      await ForegroundBillingBridge.release(BillingFgsOwner.assoc);
+    }
+
+    // 补扫早期 acquire(batch) 但未入队时，取消需放掉 batch，避免 FGS 残留。
+    if (!keptAlive &&
+        _assocPaths.isEmpty &&
+        ForegroundBillingBridge.hasOwner(BillingFgsOwner.batch)) {
+      await ForegroundBillingBridge.release(BillingFgsOwner.batch);
+    }
+
+    if (alreadySuperseded) {
       return;
     }
-    _superseded.add(imagePath);
-    if (_superseded.length > 40) {
-      final drop = _superseded.take(20).toList();
-      _superseded.removeAll(drop);
+
+    if (keptAlive || ForegroundBillingBridge.isActive) {
+      if (keptAlive) {
+        logger.info(
+          'AutoBilling',
+          'assoc cancel during share/batch; FGS kept '
+          'file=${p.basename(imagePath)}',
+        );
+      }
+      await _refreshProgressAfterAssocCancel();
     }
-    if (_awaitingScreenshotPath == imagePath) {
-      _awaitingScreenshotPath = null;
-    }
-    if (ForegroundBillingBridge.isActive) {
-      await ForegroundBillingBridge.stop();
-    }
+
     await notifications.showResult(
       title: '截图已取消，未入账',
       body: '编辑超时或原图已删除',
       success: false,
+      clearProgress: !ForegroundBillingBridge.isActive,
     );
   }
 
   /// 处理本地图片路径；成功返回交易 id 列表。
+  ///
+  /// 调度：`share` 优先于 `screenshot`，不打断 inflight（ADR-075）。
   Future<List<int>> processImagePath(
     String imagePath, {
     required String source,
     bool showNotification = true,
     bool autoSave = true,
+    bool fromRetry = false,
   }) {
     if (_awaitingScreenshotPath == imagePath) {
       _awaitingScreenshotPath = null;
     }
-    final done = Completer<List<int>>();
-    final startsBatch = _batchInflight == 0;
-    _batchInflight++;
-    if (_batchInflight == 1) {
-      // 批次开始：返回键送后台，避免 finish 拆引擎
-      unawaited(AndroidActivityBridge.setRetainOnBack(true));
-    }
-    _queue = _queue.then((_) async {
-      try {
-        if (startsBatch) {
-          await _startBatchForeground();
-        }
-        final ids = await _processImagePathLocked(
-          imagePath,
-          source: source,
-          showNotification: showNotification,
-          autoSave: autoSave,
-        );
-        done.complete(ids);
-      } catch (e, st) {
-        done.completeError(e, st);
-      } finally {
-        _batchInflight--;
-        if (_batchInflight == 0) {
-          await _stopBatchForeground();
-          try {
-            await _flushBatchResults();
-          } catch (_) {
-            _batchTallies.clear();
-          }
-          await AndroidActivityBridge.setRetainOnBack(false);
-        }
+    if (source == 'screenshot') {
+      _assocPaths.remove(imagePath);
+      if (_assocPaths.isEmpty) {
+        unawaited(ForegroundBillingBridge.release(BillingFgsOwner.assoc));
       }
-    });
-    return done.future;
+    }
+    final job = _BillingJob(
+      imagePath: imagePath,
+      source: source,
+      showNotification: showNotification,
+      autoSave: autoSave,
+      fromRetry: fromRetry,
+    );
+    if (job.isShare) {
+      _highQueue.addLast(job);
+      if (_needsShareWaitHint()) {
+        unawaited(
+          _showProgress(
+            title: kShareBillingProgressTitle,
+            body: _shareWaitBody,
+          ),
+        );
+        logger.info(
+          'AutoBilling',
+          '分享已插队，等待截图 inflight/关联窗/低优队结束后处理',
+        );
+      }
+    } else {
+      _lowQueue.addLast(job);
+    }
+    unawaited(_ensurePump());
+    return job.done.future;
+  }
+
+  _BillingJob? _takeNextJob() {
+    if (_highQueue.isNotEmpty) return _highQueue.removeFirst();
+    if (_lowQueue.isNotEmpty) return _lowQueue.removeFirst();
+    return null;
+  }
+
+  Future<void> _ensurePump() async {
+    if (_pumpRunning) return;
+    _pumpRunning = true;
+    unawaited(AndroidActivityBridge.setRetainOnBack(true));
+    try {
+      await _startBatchForeground();
+      do {
+        while (true) {
+          final job = _takeNextJob();
+          if (job == null) break;
+
+          _inflightSource = job.source;
+          _inflightFromRetry = job.fromRetry;
+          _recordingSource = job.source;
+          try {
+            final ids = await _processImagePathLocked(
+              job.imagePath,
+              source: job.source,
+              showNotification: job.showNotification,
+              autoSave: job.autoSave,
+              fromRetry: job.fromRetry,
+            );
+            if (!job.done.isCompleted) job.done.complete(ids);
+          } catch (e, st) {
+            if (!job.done.isCompleted) job.done.completeError(e, st);
+          } finally {
+            _recordingSource = null;
+            _inflightSource = null;
+            _inflightFromRetry = false;
+          }
+        }
+        // 跑空后再看一眼：finally 前又入队则继续
+      } while (_highQueue.isNotEmpty || _lowQueue.isNotEmpty);
+    } finally {
+      _pumpRunning = false;
+      // ADR-076：先 stop FGS（releaseAll），再发整批「识别结果」。
+      await _stopBatchForeground();
+      try {
+        await _flushMergedBatchResult();
+      } catch (_) {
+        _shareTallies.clear();
+        _screenshotTallies.clear();
+      }
+      await AndroidActivityBridge.setRetainOnBack(false);
+      if (_highQueue.isNotEmpty || _lowQueue.isNotEmpty) {
+        unawaited(_ensurePump());
+      }
+    }
   }
 
   Future<List<int>> _processImagePathLocked(
@@ -411,6 +640,7 @@ class AutoBillingService {
     required String source,
     required bool showNotification,
     required bool autoSave,
+    bool fromRetry = false,
   }) async {
     await _ensureCache();
     // 已处理 / 短窗去重：静默跳过，不打点（ADR-022）
@@ -444,7 +674,11 @@ class AutoBillingService {
     _inflightPath = imagePath;
     try {
       if (showNotification) {
-        await _showProgress(title: '检测到图片', body: '等待文件就绪…');
+        if (fromRetry) {
+          await _showProgress(title: '识别继续', body: '继续调用AI分析');
+        } else {
+          await _showProgress(title: '检测到图片', body: '等待文件就绪…');
+        }
       }
 
       final ready = await _waitFile(file);
@@ -463,7 +697,11 @@ class AutoBillingService {
       }
 
       if (showNotification) {
-        await _showProgress(title: '正在识别', body: 'AI 分析账单中…');
+        if (fromRetry) {
+          await _showProgress(title: '识别继续', body: '继续调用AI分析');
+        } else {
+          await _showProgress(title: '正在识别', body: 'AI 分析账单中…');
+        }
       }
 
       try {
@@ -481,6 +719,8 @@ class AutoBillingService {
         final bills = await bookkeeper.fromImageWithFallback(
           prepared.bytes,
           mimeType: prepared.mimeType,
+          recreateHttpClientOnFirstTransport:
+              source == 'screenshot' || source == 'share',
         );
         if (_superseded.contains(imagePath)) {
           return const [];

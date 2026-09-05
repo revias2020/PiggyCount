@@ -30,4 +30,22 @@ abstract final class ScreenshotWatchPath {
     }
     return s.isEmpty ? null : s;
   }
+
+  /// 展示用绝对路径（ADR-070）：主存储根 + 相对键；不改持久化。
+  static String displayAbsolute(String relativeKey, String storageRoot) {
+    var root = storageRoot.trim().replaceAll('\\', '/');
+    while (root.endsWith('/')) {
+      root = root.substring(0, root.length - 1);
+    }
+    var rel = relativeKey.trim().replaceAll('\\', '/');
+    while (rel.startsWith('/')) {
+      rel = rel.substring(1);
+    }
+    while (rel.endsWith('/')) {
+      rel = rel.substring(0, rel.length - 1);
+    }
+    if (root.isEmpty) return rel;
+    if (rel.isEmpty) return root;
+    return '$root/$rel';
+  }
 }

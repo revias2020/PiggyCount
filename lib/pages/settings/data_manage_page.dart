@@ -13,6 +13,7 @@ import '../../services/system/local_export_service.dart';
 import '../../services/system/logger_service.dart';
 import '../../styles/tokens.dart';
 import 'import_mapping_page.dart';
+import '../../widgets/pig_toast.dart';
 
 final csvServiceProvider = Provider(
   (ref) => CsvService(
@@ -54,15 +55,11 @@ class _DataManagePageState extends ConsumerState<DataManagePage> {
       );
       logger.info('CSV', _allLedgers ? '导出全部账本完成' : '导出当前账本完成');
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result.successMessage)),
-      );
+      PigToast.show(context, result.successMessage);
     } catch (e, st) {
       logger.error('CSV', '导出失败', e, st);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导出失败：$e')),
-      );
+      PigToast.show(context, '导出失败：$e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -80,15 +77,11 @@ class _DataManagePageState extends ConsumerState<DataManagePage> {
       table = CsvTable.parse(raw);
     } on FormatException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message)),
-      );
+      PigToast.show(context, e.message);
       return;
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('无法读取文件：$e')),
-      );
+      PigToast.show(context, '无法读取文件：$e');
       return;
     }
 
@@ -103,9 +96,7 @@ class _DataManagePageState extends ConsumerState<DataManagePage> {
     );
     if (!mounted || n == null) return;
     logger.info('CSV', '导入完成 $n 笔');
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('成功导入 $n 笔')),
-    );
+    PigToast.show(context, '成功导入 $n 笔');
   }
 
   @override

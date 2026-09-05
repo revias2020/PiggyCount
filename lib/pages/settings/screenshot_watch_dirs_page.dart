@@ -7,6 +7,8 @@ import '../../providers/ai_providers.dart';
 import '../../providers/automation_providers.dart';
 import '../../providers/database_provider.dart';
 import '../../styles/tokens.dart';
+import '../../utils/screenshot_watch_path.dart';
+import '../../widgets/pig_toast.dart';
 
 /// 截图自动记账 · 监听目录管理（ADR-070，仅 Android）。
 class ScreenshotWatchDirsPage extends ConsumerStatefulWidget {
@@ -20,6 +22,20 @@ class ScreenshotWatchDirsPage extends ConsumerStatefulWidget {
 class _ScreenshotWatchDirsPageState
     extends ConsumerState<ScreenshotWatchDirsPage> {
   var _busy = false;
+  String? _storageRoot;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadStorageRoot());
+  }
+
+  Future<void> _loadStorageRoot() async {
+    final root =
+        await ref.read(screenshotMonitorServiceProvider).primaryStorageRoot();
+    if (!mounted) return;
+    setState(() => _storageRoot = root);
+  }
 
   Future<void> _persistAndApply(List<String> dirs) async {
     final settings = ref.read(settingsRepositoryProvider);
@@ -37,9 +53,7 @@ class _ScreenshotWatchDirsPageState
       }
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$e'.replaceFirst('Bad state: ', ''))),
-      );
+      PigToast.show(context, '$e'.replaceFirst('Bad state: ', ''));
     }
   }
 
@@ -56,20 +70,14 @@ class _ScreenshotWatchDirsPageState
           .normalizeDirectory(picked);
       if (normalized == null) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('无法解析为可读路径，请选择内部存储下的相册文件夹'),
-          ),
-        );
+        PigToast.show(context, '无法解析为可读路径，请选择内部存储下的相册文件夹');
         return;
       }
       final current =
           await ref.read(settingsRepositoryProvider).screenshotWatchDirectories();
       if (current.any((d) => d.toLowerCase() == normalized.toLowerCase())) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('该目录已在列表中')),
-        );
+        PigToast.show(context, '该目录已在列表中');
         return;
       }
       await _persistAndApply([...current, normalized]);
@@ -113,31 +121,28 @@ class _ScreenshotWatchDirsPageState
           await ref.read(screenshotMonitorServiceProvider).discoverDirectories();
       await _persistAndApply(dirs);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            dirs.isEmpty ? '未发现截图目录' : '已更新为 ${dirs.length} 个目录',
-          ),
-        ),
-      );
+      PigToast.show(context, dirs.isEmpty ? '未发现截图目录' : '已更新为 ${dirs.length} 个目录');
     } catch (e) {
       if (!mounted) return;
-      final msg = '$e';
-      final forever = msg.contains('系统设置');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(msg.replaceFirst('Bad state: ', '')),
-          action: forever
-              ? SnackBarAction(
-                  label: '去设置',
-                  onPressed: openAppSettings,
-                )
-              : null,
-        ),
-      );
+      final msg = '$e'.replaceFirst('Bad state: ', '');
+      if (msg.contains('系统设置')) {
+        await showActionHintDialog(
+          context,
+          message: msg,
+          onAction: openAppSettings,
+        );
+      } else {
+        PigToast.show(context, msg);
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  String? _subtitleFor(String relativeKey) {
+    final root = _storageRoot;
+    if (root == null || root.isEmpty) return null;
+    return ScreenshotWatchPath.displayAbsolute(relativeKey, root);
   }
 
   @override
@@ -205,29 +210,11 @@ class _ScreenshotWatchDirsPageState
                     clipBehavior: Clip.antiAlias,
                     child: Column(
                       children: [
-                        for (var i = 0; i < dirs.length; i++) ...[
-                          if (i > 0)
-                            const Divider(height: 1, indent: 16, endIndent: 16),
-                          ListTile(
-                            title: Text(
-                              dirs[i],
-                              style: const TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            trailing: IconButton(
-                              tooltip: '移出列表',
-                              icon: const Icon(
-                                Icons.remove_circle_outline,
-                                color: PigTokens.danger,
-                              ),
-                              onPressed: _busy
-                                  ? null
-                                  : () => _removeDirectory(dirs[i]),
-                            ),
+                        for (var i = 0; i < dirs.length; i++)
+                          _dirTile(
+                            dirs[i],
+                            showDivider: i > 0,
                           ),
-                        ],
                       ],
                     ),
                   ),
@@ -243,6 +230,44 @@ class _ScreenshotWatchDirsPageState
                 ],
               ],
             ),
+    );
+  }
+
+  Widget _dirTile(String dir, {required bool showDivider}) {
+    final abs = _subtitleFor(dir);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (showDivider)
+          const Divider(height: 1, indent: 16, endIndent: 16),
+        ListTile(
+          title: Text(
+            dir,
+            style: const TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          subtitle: abs == null
+              ? null
+              : Text(
+                  abs,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    height: 1.35,
+                    color: PigTokens.textTertiary,
+                  ),
+                ),
+          trailing: IconButton(
+            tooltip: '移出列表',
+            icon: const Icon(
+              Icons.remove_circle_outline,
+              color: PigTokens.danger,
+            ),
+            onPressed: _busy ? null : () => _removeDirectory(dir),
+          ),
+        ),
+      ],
     );
   }
 }

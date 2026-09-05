@@ -26,10 +26,10 @@ import java.io.File
 class ScreenshotObserver(
     private val context: Context,
     private val onScreenshotDetected: (String) -> Unit,
-    private val onScreenshotProgress: (String) -> Unit = {},
+    private val onScreenshotProgress: (path: String, resume: Boolean) -> Unit = { _, _ -> },
     private val onScreenshotSuperseded: (oldPath: String, newPath: String) -> Unit = { _, _ -> },
     private val onScreenshotCancelled: (String) -> Unit = {},
-    private val     onSettleLog: (String) -> Unit = {},
+    private val onSettleLog: (String) -> Unit = {},
     initialWatchDirectories: Collection<String> = emptyList(),
 ) : ContentObserver(Handler(Looper.getMainLooper())) {
 
@@ -47,6 +47,10 @@ class ScreenshotObserver(
         private const val OBSERVE_MS = 2000L
         /** 删原且内存无后继时，等待新候选出现。 */
         private const val DELETE_WAIT_MS = 2000L
+        /** 无水位时回前台补扫 DATE_ADDED 回退窗口（ADR-073 / 074）。 */
+        private const val RESUME_SCAN_FALLBACK_AGE_SECONDS = 300L
+        /** 水位补扫时间封顶（ADR-074）。 */
+        private const val RESUME_SCAN_CAP_AGE_SECONDS = 24L * 60L * 60L
     }
 
     private data class Candidate(
@@ -135,6 +139,12 @@ class ScreenshotObserver(
                 val size = if (sizeIdx >= 0) it.getLong(sizeIdx) else fileSize(path)
                 val age = System.currentTimeMillis() / 1000 - dateAdded
                 if (age > MAX_AGE_SECONDS) {
+                    val keywordHit = ScreenshotWatchPaths.keywordHit(path, name)
+                    if (keywordHit) {
+                        settleLog(
+                            "超龄丢弃：age=${age}s > ${MAX_AGE_SECONDS}s file=$name",
+                        )
+                    }
                     clearRetry(uri)
                     return
                 }
@@ -152,22 +162,39 @@ class ScreenshotObserver(
     }
 
     private fun scanRecent() {
+        val now = System.currentTimeMillis() / 1000
+        scanRecentInternal(now - MAX_AGE_SECONDS, gateImmediately = false)
+    }
+
+    /**
+     * 回前台补扫：捞 [sinceEpochSeconds] 之后的漏检截图并立刻门闩（ADR-074）。
+     * [sinceEpochSeconds] 为空则回退近 5 分钟（ADR-073），并与 24h 封顶取更晚下界。
+     */
+    fun scanMissedForResume(sinceEpochSeconds: Long? = null) {
+        val now = System.currentTimeMillis() / 1000
+        val lower = sinceEpochSeconds ?: (now - RESUME_SCAN_FALLBACK_AGE_SECONDS)
+        val since = maxOf(lower, now - RESUME_SCAN_CAP_AGE_SECONDS)
+        scanRecentInternal(since, gateImmediately = true)
+    }
+
+    /** [sinceExclusive]：只捞 `DATE_ADDED > sinceExclusive` 的图。 */
+    private fun scanRecentInternal(sinceExclusive: Long, gateImmediately: Boolean) {
         try {
             val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
             } else {
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI
             }
-            val now = System.currentTimeMillis() / 1000
             val cursor = context.contentResolver.query(
                 uri,
                 projection(),
                 "${MediaStore.Images.Media.DATE_ADDED} > ?",
-                arrayOf((now - MAX_AGE_SECONDS).toString()),
+                arrayOf(sinceExclusive.toString()),
                 "${MediaStore.Images.Media.DATE_ADDED} DESC"
             )
             cursor?.use {
                 val sizeIdx = it.getColumnIndex(MediaStore.Images.Media.SIZE)
+                var offered = 0
                 while (it.moveToNext()) {
                     val pathIdx = it.getColumnIndex(MediaStore.Images.Media.DATA)
                     val nameIdx = it.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
@@ -176,12 +203,53 @@ class ScreenshotObserver(
                     val name = it.getString(nameIdx) ?: ""
                     if (isPending(path, name, readPending(it))) continue
                     val size = if (sizeIdx >= 0) it.getLong(sizeIdx) else fileSize(path)
-                    offerCandidate(path, name, size, trashed = readTrashed(it))
+                    if (gateImmediately) {
+                        if (offerResumeCandidate(path, name, size, trashed = readTrashed(it))) {
+                            offered++
+                        }
+                    } else {
+                        offerCandidate(path, name, size, trashed = readTrashed(it))
+                    }
+                }
+                if (gateImmediately) {
+                    settleLog("回前台补扫：since=${sinceExclusive}s 立刻门闩 $offered 张")
                 }
             }
         } catch (e: Exception) {
             Log.e(TAG, "scanRecent failed", e)
         }
+    }
+
+    /**
+     * 回前台补扫专用：目录∩关键词∩未处理且文件仍在 → 立刻门闩（不走 15s 关联窗）。
+     * @return 是否真正触发入账回调
+     */
+    private fun offerResumeCandidate(
+        path: String,
+        name: String,
+        size: Long,
+        trashed: Boolean = false,
+    ): Boolean {
+        val keywordHit = ScreenshotWatchPaths.keywordHit(path, name)
+        if (ScreenshotNonCandidate.matches(path, name, trashed)) return false
+        if (!keywordHit) return false
+        if (watchDirectories.isEmpty()) return false
+        if (!ScreenshotWatchPaths.matches(path, watchDirectories)) return false
+        if (processed.contains(path)) return false
+        if (candidates.containsKey(path)) return false
+        if (!fileAlive(path)) return false
+
+        settleLog("回前台补扫：立刻入账 file=$name size=$size")
+        val c = Candidate(
+            path = path,
+            name = name,
+            lastSize = size,
+            firstSeenAt = System.currentTimeMillis(),
+        )
+        candidates[path] = c
+        emitEarlyProgress(c, resume = true)
+        tryAccept(c)
+        return processed.contains(path)
     }
 
     private fun offerCandidate(path: String, name: String, size: Long, trashed: Boolean = false) {
@@ -261,11 +329,11 @@ class ScreenshotObserver(
         settleLog("同路径：不重置关联窗 file=$name size=$size")
     }
 
-    private fun emitEarlyProgress(c: Candidate) {
+    private fun emitEarlyProgress(c: Candidate, resume: Boolean = false) {
         if (c.progressSent) return
         c.progressSent = true
         try {
-            onScreenshotProgress(c.path)
+            onScreenshotProgress(c.path, resume)
         } catch (e: Exception) {
             Log.e(TAG, "onScreenshotProgress failed", e)
         }

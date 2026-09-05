@@ -20,7 +20,7 @@ bool looksLikeAiSetupError(String message) {
 /// 错误文案旁的「去设置」按钮；非配置类错误返回 null。
 ///
 /// 前台确认弹层（语音/图片）能力未就绪时只用弹层内引导（ADR-057），
-/// 不再叠 SnackBar，避免跳到 AI 设置后重复通知。
+/// 不再叠轻提示，避免跳到 AI 设置后重复通知。
 Widget? aiSetupTextButton(BuildContext context, String? error) {
   if (error == null || !looksLikeAiSetupError(error)) return null;
   return TextButton(

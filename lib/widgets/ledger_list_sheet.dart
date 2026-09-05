@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/database_provider.dart';
 import '../providers/ledger_session_provider.dart';
 import '../styles/tokens.dart';
+import '../widgets/pig_toast.dart';
 
 /// 弹出账本列表（切换 + 管理唯一入口）。
 Future<void> showLedgerListSheet(BuildContext context) {
@@ -139,9 +140,7 @@ class LedgerListSheet extends ConsumerWidget {
       await notifier.create(name);
     } on StateError catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.message)),
-        );
+        PigToast.show(context, e.message);
       }
     }
   }
@@ -162,9 +161,7 @@ class LedgerListSheet extends ConsumerWidget {
       await notifier.rename(item.id, name);
     } on StateError catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.message)),
-        );
+        PigToast.show(context, e.message);
       }
     }
   }
@@ -198,9 +195,7 @@ class LedgerListSheet extends ConsumerWidget {
     if (ok != true || !context.mounted) return;
     final deleted = await notifier.delete(item.id);
     if (!deleted && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('至少需要保留一个账本')),
-      );
+      PigToast.show(context, '至少需要保留一个账本');
     }
   }
 

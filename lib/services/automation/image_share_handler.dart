@@ -13,9 +13,9 @@ import 'share_early_progress_gate.dart';
 /// 支持单张与多选（`SEND_MULTIPLE`，ADR-058）。
 ///
 /// ShareRelay 拷图成功即贴同 id 进度并起 FGS（ADR-063 / 069；冷启先直发通知，
-/// 且等 startForeground 或短超时后再进 MainActivity）；Dart 接手时再次
-/// [ForegroundBillingBridge.start]，**先** [AndroidActivityBridge.moveTaskToBack]
-/// 回源，再 hold 分享已收到进度 ≥1s，然后 Vision。
+/// 且等 startForeground 或短超时后再进 MainActivity）；Dart 接手时
+/// [ForegroundBillingBridge.acquire] `share`，**先** [AndroidActivityBridge.moveTaskToBack]
+/// 回源，再 hold 分享已收到进度 ≥1s，然后 Vision；结束 [release] `share`（ADR-076）。
 /// 直存期间返回键由 [AutoBillingService] 保活，不 finish。
 class ImageShareHandler {
   ImageShareHandler({
@@ -71,8 +71,9 @@ class ImageShareHandler {
     // 原生 copyUrisToCache 已截断；此处只消费 truncated 标志做文案/批次注记。
     final progressBody = shareReceivedProgressBody(truncated: truncated);
 
-    // 始终 startForegroundService，不假设 Relay 已成功（ADR-063）。
-    await ForegroundBillingBridge.start(
+    // 始终 acquire(share)，不假设 Relay 已成功（ADR-063 / 076）。
+    await ForegroundBillingBridge.acquire(
+      BillingFgsOwner.share,
       title: kShareBillingProgressTitle,
       body: progressBody,
     );
@@ -82,21 +83,25 @@ class ImageShareHandler {
       autoBilling.setBatchNote(kBillingImagesTruncatedHint);
     }
 
-    // 先回源再 hold：前台期间 FGS 文案常不可见；回源后栏里才算「看得到」。
-    await AndroidActivityBridge.moveTaskToBack();
-    // moveTaskToBack 返回早于 visibility=false（热启实测约 300ms）
-    await Future<void>.delayed(ShareEarlyProgressGate.backgroundSettle);
-    ShareEarlyProgressGate.markShown();
-    await ShareEarlyProgressGate.awaitMinDisplay();
+    try {
+      // 先回源再 hold：前台期间 FGS 文案常不可见；回源后栏里才算「看得到」。
+      await AndroidActivityBridge.moveTaskToBack();
+      // moveTaskToBack 返回早于 visibility=false（热启实测约 300ms）
+      await Future<void>.delayed(ShareEarlyProgressGate.backgroundSettle);
+      ShareEarlyProgressGate.markShown();
+      await ShareEarlyProgressGate.awaitMinDisplay();
 
-    await Future.wait([
-      for (final path in paths)
-        autoBilling.processImagePath(
-          path,
-          source: 'share',
-          showNotification: true,
-          autoSave: true,
-        ),
-    ]);
+      await Future.wait([
+        for (final path in paths)
+          autoBilling.processImagePath(
+            path,
+            source: 'share',
+            showNotification: true,
+            autoSave: true,
+          ),
+      ]);
+    } finally {
+      await ForegroundBillingBridge.release(BillingFgsOwner.share);
+    }
   }
 }

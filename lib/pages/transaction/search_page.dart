@@ -11,6 +11,7 @@ import '../../widgets/category_icon_view.dart';
 import '../../widgets/empty_state.dart';
 import '../../widgets/page_status.dart';
 import '../../widgets/transaction/transaction_row_tile.dart';
+import '../../widgets/pig_toast.dart';
 
 /// 账单搜索页：关键词 + 金额/日期/分类筛选 + 批量改备注/分类/删除。
 class SearchPage extends ConsumerStatefulWidget {
@@ -425,9 +426,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
         _batchMode = false;
         _selectedIds.clear();
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已更新备注')),
-      );
+      PigToast.show(context, '已更新备注');
     }
   }
 
@@ -436,9 +435,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
     if (selected.isEmpty) return;
     final types = selected.map((e) => e.tx.type).toSet();
     if (types.length > 1) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请选择同一类型（支出或收入）的账单')),
-      );
+      PigToast.show(context, '请选择同一类型（支出或收入）的账单');
       return;
     }
     final kind = types.first;
@@ -508,9 +505,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
         _batchMode = false;
         _selectedIds.clear();
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已更改分类')),
-      );
+      PigToast.show(context, '已更改分类');
     }
   }
 
@@ -537,9 +532,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
         _batchMode = false;
         _selectedIds.clear();
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已删除 $count 笔')),
-      );
+      PigToast.show(context, '已删除 $count 笔');
     }
   }
 

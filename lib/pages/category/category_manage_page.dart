@@ -19,6 +19,7 @@ import '../../widgets/category_icon_view.dart';
 import '../../widgets/import_progress_layer.dart';
 import '../../widgets/page_status.dart';
 import '../../widgets/workspace_sheet.dart';
+import '../../widgets/pig_toast.dart';
 
 /// 记账分类管理：主分类网格 + 详情弹层管子分类（固定两层）。
 class CategoryManagePage extends ConsumerStatefulWidget {
@@ -85,14 +86,10 @@ class _CategoryManagePageState extends ConsumerState<CategoryManagePage> {
         shareSubject: '小猪记账分类',
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result.successMessage)),
-      );
+      PigToast.show(context, result.successMessage);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导出失败：$e')),
-      );
+      PigToast.show(context, '导出失败：$e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -155,20 +152,12 @@ class _CategoryManagePageState extends ConsumerState<CategoryManagePage> {
       ref.invalidate(expenseCategoriesProvider);
       ref.invalidate(incomeCategoriesProvider);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            result.iconsImported > 0
+      PigToast.show(context, result.iconsImported > 0
                 ? '导入完成：新增 ${result.imported} 个，跳过 ${result.skipped} 个，图标 ${result.iconsImported} 个'
-                : '导入完成：新增 ${result.imported} 个，跳过 ${result.skipped} 个',
-          ),
-        ),
-      );
+                : '导入完成：新增 ${result.imported} 个，跳过 ${result.skipped} 个');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导入失败：$e')),
-      );
+      PigToast.show(context, '导入失败：$e');
     }
   }
 
@@ -197,9 +186,7 @@ class _CategoryManagePageState extends ConsumerState<CategoryManagePage> {
       ref.invalidate(expenseCategoriesProvider);
       ref.invalidate(incomeCategoriesProvider);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已清除 $n 个未使用分类')),
-      );
+      PigToast.show(context, '已清除 $n 个未使用分类');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -230,14 +217,8 @@ class _CategoryManagePageState extends ConsumerState<CategoryManagePage> {
       ref.invalidate(expenseCategoriesProvider);
       ref.invalidate(incomeCategoriesProvider);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            '已补缺 ${r.created} 项'
-            '${r.removedObsolete > 0 ? '，清理闲置旧分类 ${r.removedObsolete} 项' : ''}',
-          ),
-        ),
-      );
+      PigToast.show(context, '已补缺 ${r.created} 项'
+            '${r.removedObsolete > 0 ? '，清理闲置旧分类 ${r.removedObsolete} 项' : ''}');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -569,7 +550,7 @@ class _MainCategoryDetailSheetState extends State<_MainCategoryDetailSheet> {
     final check = await widget.repo.canDemoteToChild(_main.id);
     if (check is DemoteBlockedHasChildren) {
       if (!mounted) return;
-      _showWarnToast(context, '该分类下存在子分类，无法调整');
+      PigToast.show(context, '该分类下存在子分类，无法调整');
       return;
     }
     final parents = (await widget.repo.listByKind(widget.kind))
@@ -1140,9 +1121,7 @@ class _CategoryEditSheetState extends ConsumerState<_CategoryEditSheet> {
       });
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('选择图标失败：$e')),
-      );
+      PigToast.show(context, '选择图标失败：$e');
     } finally {
       if (mounted) setState(() => _picking = false);
     }
@@ -1535,42 +1514,6 @@ class _SelectMainCategorySheetState extends State<_SelectMainCategorySheet> {
   }
 }
 
-void _showWarnToast(BuildContext context, String message) {
-  final overlay = Overlay.of(context);
-  late OverlayEntry entry;
-  entry = OverlayEntry(
-    builder: (ctx) => Positioned(
-      top: MediaQuery.paddingOf(ctx).top + 120,
-      left: 32,
-      right: 32,
-      child: Material(
-        elevation: 6,
-        borderRadius: BorderRadius.circular(12),
-        color: PigTokens.surface,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          child: Row(
-            children: [
-              const Icon(Icons.warning_amber_rounded,
-                  color: Color(0xFFFF9800), size: 22),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  message,
-                  style: const TextStyle(fontSize: 14),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    ),
-  );
-  overlay.insert(entry);
-  Future<void>.delayed(const Duration(seconds: 2), () {
-    entry.remove();
-  });
-}
 
 Future<void> _alert(BuildContext context, String title, String body) {
   return showDialog<void>(

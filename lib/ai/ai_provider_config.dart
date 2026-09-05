@@ -221,7 +221,7 @@ class AiCapabilityBinding {
   }
 }
 
-/// 能力未就绪（无绑定 / 无 Key / 无对应模型），供 UI 走 E1 SnackBar。
+/// 能力未就绪（无绑定 / 无 Key / 无对应模型），供 UI 走 E1 轻提示 / 层内引导。
 class AiCapabilityNotReadyException implements Exception {
   AiCapabilityNotReadyException(this.message);
   final String message;

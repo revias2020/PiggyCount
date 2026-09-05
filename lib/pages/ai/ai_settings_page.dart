@@ -10,6 +10,7 @@ import '../../styles/tokens.dart';
 import '../../widgets/ai/ai_setup_helpers.dart';
 import '../../widgets/page_status.dart';
 import 'ai_provider_manage_page.dart';
+import '../../widgets/pig_toast.dart';
 
 /// AI 设置：服务商管理入口 + 文本/视觉/语音能力绑定 + 语音识别引擎（ADR-009 / ADR-032 / ADR-052）。
 class AiSettingsPage extends ConsumerWidget {
@@ -268,9 +269,7 @@ class _SpeechRecognitionSectionState
       progressNotifier.dispose();
       statusNotifier.dispose();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$e')),
-        );
+        PigToast.show(context, '$e');
       }
       return false;
     }
@@ -281,11 +280,7 @@ class _SpeechRecognitionSectionState
         widget.providers.any((p) => p.voiceReadyForCapability);
     if (!voiceReady) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('请先配置并测通支持语音的服务商，再绑定「语音记账」'),
-        ),
-      );
+      PigToast.show(context, '请先配置并测通支持语音的服务商，再绑定「语音记账」');
       return;
     }
     await _saveEngine(SpeechRecognitionEngineKind.aiVoice);
@@ -509,11 +504,7 @@ class _CapabilityTile extends StatelessWidget {
 
   Future<void> _pick(BuildContext context) async {
     if (providers.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('暂无已测通的服务商，请先到服务商编辑页保存以完成连接测试'),
-        ),
-      );
+      PigToast.show(context, '暂无已测通的服务商，请先到服务商编辑页保存以完成连接测试');
       return;
     }
     final selected = await showModalBottomSheet<String>(

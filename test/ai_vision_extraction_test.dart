@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -24,6 +23,8 @@ class _FakeVisionClient extends OpenAiCompatibleClient {
 
   final List<Future<String> Function()> _handlers;
   var _index = 0;
+
+  int get callCount => _index;
 
   @override
   Future<String> vision({
@@ -57,12 +58,11 @@ AiServiceProvider _provider(String id) => AiServiceProvider(
 const _ctx = AiExtractionContext.fallback;
 
 void main() {
-  test('传输失败重试后换下一个服务商', () async {
+  test('后台传输失败不重试同商，直接换下一个服务商', () async {
     final engine = AiExtractionEngine(
       providerStore: _FakeVisionStore([_provider('a'), _provider('b')]),
       client: _FakeVisionClient([
         () => throw AiTransportException('abort'),
-        () => throw AiTransportException('abort again'),
         () async =>
             '[{"amount":12,"type":"expense","time":"2026-08-20T00:00:00"}]',
       ]),
@@ -81,7 +81,6 @@ void main() {
       providerStore: _FakeVisionStore([_provider('a')]),
       client: _FakeVisionClient([
         () => throw AiTransportException('abort'),
-        () => throw AiTransportException('abort again'),
       ]),
     );
 
@@ -98,6 +97,52 @@ void main() {
         ),
       ),
     );
+  });
+
+  test('首次传输失败即重建 Client，再从头整轮换商', () async {
+    final client = _FakeVisionClient([
+      // 首商 abort → 立刻重建，不打 b/c
+      () => throw AiTransportException('abort'),
+      // 重建后整轮：a 再 abort，b 成功
+      () => throw AiTransportException('abort'),
+      () async =>
+          '[{"amount":3,"type":"expense","time":"2026-08-20T00:00:00"}]',
+    ]);
+    final engine = AiExtractionEngine(
+      providerStore: _FakeVisionStore([
+        _provider('a'),
+        _provider('b'),
+        _provider('c'),
+      ]),
+      client: client,
+    );
+
+    final bills = await engine.extractFromImageWithFallback(
+      imageBytes: Uint8List.fromList([1]),
+      context: _ctx,
+      recreateHttpClientOnFirstTransport: true,
+    );
+    expect(bills.single.amount, 3);
+    expect(client.callCount, 3); // 非旧语义的 1+3 或 3+…
+  });
+
+  test('未开启首传重建时，传输失败仍直接换下一商', () async {
+    final client = _FakeVisionClient([
+      () => throw AiTransportException('abort'),
+      () async =>
+          '[{"amount":12,"type":"expense","time":"2026-08-20T00:00:00"}]',
+    ]);
+    final engine = AiExtractionEngine(
+      providerStore: _FakeVisionStore([_provider('a'), _provider('b')]),
+      client: client,
+    );
+
+    final bills = await engine.extractFromImageWithFallback(
+      imageBytes: Uint8List.fromList([1, 2, 3]),
+      context: _ctx,
+    );
+    expect(bills.first.amount, 12);
+    expect(client.callCount, 2);
   });
 
   test('API 失败不重试，直接换下一个服务商', () async {

@@ -20,6 +20,7 @@ import 'amount_keypad.dart';
 import 'image_billing_sheet.dart';
 import 'record_time_picker_dialog.dart';
 import 'voice_billing_sheet.dart';
+import '../../widgets/pig_toast.dart';
 
 /// 打开记一笔 / 编辑账单底部弹层。
 ///
@@ -261,10 +262,8 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
   }
 
   void _toast(String message) {
-    // 使用弹层内 Scaffold 的 Messenger，避免提示出现在底层页面、关掉弹层才看见
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    // root Overlay 轻提示，模态底栏打开时也可见（ADR-071）
+    PigToast.show(context, message);
   }
 
   /// 备注旁语音：关本弹层丢草稿，再走与扇形相同的语音记账确认流。
@@ -478,7 +477,7 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
         : ref.watch(incomeCategoriesProvider);
     final tagBundlesAsync = ref.watch(tagGroupBundlesProvider);
 
-    // 自带 Scaffold，保证校验 SnackBar 显示在记一笔弹层内。
+    // 自带 Scaffold，保证记一笔弹层内有独立 Material 祖先。
     // 高度由 showWorkspaceSheet(fixedHeight) 钉死；Scaffold 本身会吃满最大约束。
     return Scaffold(
       backgroundColor: PigTokens.surface,

@@ -9,6 +9,7 @@ import '../../styles/tokens.dart';
 import '../../utils/tag_colors.dart';
 import '../../widgets/capsule_switcher.dart';
 import '../../widgets/workspace_sheet.dart';
+import '../../widgets/pig_toast.dart';
 
 /// 标签管理：按组维护字符串组 / 数值组。
 class TagManagePage extends ConsumerWidget {
@@ -103,9 +104,7 @@ class TagManagePage extends ConsumerWidget {
     final n = await repo.clearUnused();
     ref.invalidate(tagGroupBundlesProvider);
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已清除 $n 个未使用标签')),
-    );
+    PigToast.show(context, '已清除 $n 个未使用标签');
   }
 
   Future<void> _restoreDefaults(
@@ -134,9 +133,7 @@ class TagManagePage extends ConsumerWidget {
     final n = await repo.restoreDefaults();
     ref.invalidate(tagGroupBundlesProvider);
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已补缺 $n 项')),
-    );
+    PigToast.show(context, '已补缺 $n 项');
   }
 
   Future<void> _addGroup(BuildContext context, TagRepository repo) async {
@@ -150,9 +147,7 @@ class TagManagePage extends ConsumerWidget {
       );
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('创建失败：${_errMsg(e)}')),
-        );
+        PigToast.show(context, '创建失败：${_errMsg(e)}');
       }
     }
   }
@@ -179,9 +174,7 @@ class TagManagePage extends ConsumerWidget {
       );
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('保存失败：${_errMsg(e)}')),
-        );
+        PigToast.show(context, '保存失败：${_errMsg(e)}');
       }
     }
   }
@@ -192,9 +185,7 @@ class TagManagePage extends ConsumerWidget {
     TagGroupBundle bundle,
   ) async {
     if (bundle.tags.isNotEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('组内仍有标签，请先移出或删除')),
-      );
+      PigToast.show(context, '组内仍有标签，请先移出或删除');
       return;
     }
     final ok = await showDialog<bool>(
@@ -219,9 +210,7 @@ class TagManagePage extends ConsumerWidget {
         await repo.deleteGroup(bundle.group.id);
       } catch (e) {
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('$e')),
-          );
+          PigToast.show(context, '$e');
         }
       }
     }
@@ -248,9 +237,7 @@ class TagManagePage extends ConsumerWidget {
       );
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('创建失败：${_errMsg(e)}')),
-        );
+        PigToast.show(context, '创建失败：${_errMsg(e)}');
       }
     }
   }
@@ -285,9 +272,7 @@ class TagManagePage extends ConsumerWidget {
       );
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('保存失败：${_errMsg(e)}')),
-        );
+        PigToast.show(context, '保存失败：${_errMsg(e)}');
       }
     }
   }
@@ -1229,18 +1214,14 @@ class _TagEditSheetState extends ConsumerState<_TagEditSheet> {
     }
     final min = double.tryParse(_min.text.trim());
     if (min == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请填写有效下限')),
-      );
+      PigToast.show(context, '请填写有效下限');
       return;
     }
     double? max;
     if (!_noMax) {
       max = double.tryParse(_max.text.trim());
       if (max == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('请填写有效上限，或勾选无上限')),
-        );
+        PigToast.show(context, '请填写有效上限，或勾选无上限');
         return;
       }
     }

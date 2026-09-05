@@ -14,6 +14,7 @@ import '../../services/system/logger_service.dart';
 import '../../styles/tokens.dart';
 import '../../widgets/ai/ai_setup_helpers.dart';
 import '../../widgets/ai/bill_select_tile.dart';
+import '../../widgets/pig_toast.dart';
 
 /// 单张待识别图（前台多图确认流，ADR-058）。
 class BillingImage {
@@ -71,9 +72,7 @@ Future<void> pickImageForBilling(
     truncated = true;
   }
   if (truncated && context.mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('最多 9 张，$kBillingImagesTruncatedHint')),
-    );
+    PigToast.show(context, '最多 9 张，$kBillingImagesTruncatedHint');
   }
 
   final images = <BillingImage>[];
@@ -355,10 +354,9 @@ class _ImageBillingSheetState extends ConsumerState<_ImageBillingSheet> {
         _groups.fold<int>(0, (n, g) => n + g.entries.length);
     if (remainingBills == 0 &&
         _groups.every((g) => g.error == null)) {
+      final overlay = Overlay.of(context, rootOverlay: true);
       Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已记账')),
-      );
+      PigToast.showOn(overlay, '已记账');
       return;
     }
 
@@ -366,7 +364,7 @@ class _ImageBillingSheetState extends ConsumerState<_ImageBillingSheet> {
       final text = saved > 0
           ? '已记账 $saved 条，其余失败：$failMsg'
           : '保存失败：$failMsg';
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+      PigToast.show(context, text);
     }
   }
 

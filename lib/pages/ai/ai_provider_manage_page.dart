@@ -8,6 +8,7 @@ import '../../styles/tokens.dart';
 import '../../widgets/ai/ai_setup_helpers.dart';
 import '../../widgets/page_status.dart';
 import 'ai_provider_edit_page.dart';
+import '../../widgets/pig_toast.dart';
 
 /// 服务商列表：内置智谱 + 最多 5 个自定义。
 class AiProviderManagePage extends ConsumerWidget {
@@ -61,13 +62,7 @@ class AiProviderManagePage extends ConsumerWidget {
     final store = ref.read(aiProviderStoreProvider);
     if (!await store.canAddCustomProvider()) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            '自定义服务商最多 ${AiProviderStore.maxCustomProviders} 个',
-          ),
-        ),
-      );
+      PigToast.show(context, '自定义服务商最多 ${AiProviderStore.maxCustomProviders} 个');
       return;
     }
     if (!context.mounted) return;
@@ -122,19 +117,13 @@ class AiProviderManagePage extends ConsumerWidget {
       ref.invalidate(aiProvidersListProvider);
       ref.invalidate(aiMineSubtitleProvider);
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已删除')),
-      );
+      PigToast.show(context, '已删除');
     } on AiProviderInUseException catch (e) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$e')),
-      );
+      PigToast.show(context, '$e');
     } catch (e) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('删除失败：$e')),
-      );
+      PigToast.show(context, '删除失败：$e');
     }
   }
 }

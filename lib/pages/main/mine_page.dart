@@ -9,6 +9,7 @@ import '../../providers/automation_providers.dart';
 import '../../providers/database_provider.dart';
 import '../../services/sync/cloud_sync_providers.dart';
 import '../../styles/tokens.dart';
+import '../../widgets/pig_toast.dart';
 import '../ai/ai_settings_page.dart';
 import '../category/category_manage_page.dart';
 import '../settings/about_page.dart';
@@ -173,19 +174,16 @@ class MinePage extends ConsumerWidget {
                       }
                     } catch (e) {
                       if (!context.mounted) return;
-                      final msg = '$e';
-                      final forever = msg.contains('系统设置');
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(msg.replaceFirst('Bad state: ', '')),
-                          action: forever
-                              ? SnackBarAction(
-                                  label: '去设置',
-                                  onPressed: openAppSettings,
-                                )
-                              : null,
-                        ),
-                      );
+                      final msg = '$e'.replaceFirst('Bad state: ', '');
+                      if (msg.contains('系统设置')) {
+                        await showActionHintDialog(
+                          context,
+                          message: msg,
+                          onAction: openAppSettings,
+                        );
+                      } else {
+                        PigToast.show(context, msg);
+                      }
                       return;
                     }
                   }

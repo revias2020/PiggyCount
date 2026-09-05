@@ -15,6 +15,7 @@ import '../system/logger_service.dart';
 import 'cloud_sync_config.dart';
 import 'cloud_sync_providers.dart';
 import 'cloud_sync_service.dart';
+import '../../widgets/pig_toast.dart';
 
 /// 测连成功后写入已测通：表单与已保存字段一致则整份标记；否则只记指纹供随后「保存」保留。
 Future<void> persistCloudVerifiedAfterTest({
@@ -67,9 +68,7 @@ Future<void> runWorkspaceSync({
   final cfg = ref.read(cloudSyncConfigProvider).valueOrNull;
   if (cfg == null || !cfg.isReadyForSync) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('云服务不可用，请确认配置信息')),
-      );
+      PigToast.show(context, '云服务不可用，请确认配置信息');
     }
     return;
   }
@@ -135,9 +134,7 @@ Future<void> runWorkspaceSync({
     return;
   }
   if (context.mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('同步完成')),
-    );
+    PigToast.show(context, '同步完成');
   }
 }
 

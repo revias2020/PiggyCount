@@ -21,4 +21,21 @@ void main() {
       isNull,
     );
   });
+
+  test('displayAbsolute joins storage root and relative key', () {
+    expect(
+      ScreenshotWatchPath.displayAbsolute(
+        'Pictures/Screenshots',
+        '/storage/emulated/0/',
+      ),
+      '/storage/emulated/0/Pictures/Screenshots',
+    );
+    expect(
+      ScreenshotWatchPath.displayAbsolute(
+        '/DCIM/Screenshots/',
+        '/storage/emulated/0',
+      ),
+      '/storage/emulated/0/DCIM/Screenshots',
+    );
+  });
 }

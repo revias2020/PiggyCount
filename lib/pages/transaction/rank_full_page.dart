@@ -11,6 +11,7 @@ import '../../widgets/empty_state.dart';
 import '../../widgets/page_status.dart';
 import '../../widgets/report/report_rank_tile.dart';
 import 'record_editor_sheet.dart';
+import '../../widgets/pig_toast.dart';
 
 /// 排行全页：金额双向排序、三列汇总、仅批量删除（ADR-033）。
 class RankFullPage extends ConsumerStatefulWidget {
@@ -80,9 +81,7 @@ class _RankFullPageState extends ConsumerState<RankFullPage> {
       _batchMode = false;
       _selectedIds.clear();
     });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已删除 $count 笔')),
-    );
+    PigToast.show(context, '已删除 $count 笔');
   }
 
   @override

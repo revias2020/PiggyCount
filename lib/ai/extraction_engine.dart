@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:typed_data';
 
 import '../services/system/logger_service.dart';
@@ -55,7 +54,6 @@ class AiExtractionEngine {
       imageBytes: imageBytes,
       context: context,
       mimeType: mimeType,
-      retryTransportOnSameProvider: false,
       onSwitch: onSwitch,
     );
   }
@@ -80,13 +78,15 @@ class AiExtractionEngine {
     return _parser.parse(raw);
   }
 
-  static const _networkRetryDelay = Duration(seconds: 3);
-
-  /// 后台直存：网络失败 3s 重试 1 次；仍失败或非网络失败则换下一个已测通视觉服务商。
+  /// 后台直存：每已测通服务商仅 1 次；失败立即换下一候选（ADR-072；对齐 ADR-055）。
+  ///
+  /// [recreateHttpClientOnFirstTransport]：任一商首次传输失败即重建 Client，
+  /// 再从头跑完整轮换商一次（ADR-073；不先打完所有商再重建）。
   Future<List<BillInfo>> extractFromImageWithFallback({
     required Uint8List imageBytes,
     required AiExtractionContext context,
     String mimeType = 'image/jpeg',
+    bool recreateHttpClientOnFirstTransport = false,
   }) async {
     final providers = await _store.listVisionFallbackProviders();
     return _extractFromImageWithProviders(
@@ -94,7 +94,7 @@ class AiExtractionEngine {
       imageBytes: imageBytes,
       context: context,
       mimeType: mimeType,
-      retryTransportOnSameProvider: true,
+      recreateHttpClientOnFirstTransport: recreateHttpClientOnFirstTransport,
     );
   }
 
@@ -103,8 +103,8 @@ class AiExtractionEngine {
     required Uint8List imageBytes,
     required AiExtractionContext context,
     required String mimeType,
-    required bool retryTransportOnSameProvider,
     AiVisionSwitchCallback? onSwitch,
+    bool recreateHttpClientOnFirstTransport = false,
   }) async {
     if (providers.isEmpty) {
       throw AiCapabilityNotReadyException(
@@ -119,50 +119,47 @@ class AiExtractionEngine {
     );
 
     Object? lastError;
-    for (var providerIndex = 0; providerIndex < providers.length; providerIndex++) {
+    var mayRecreateOnTransport = recreateHttpClientOnFirstTransport;
+    for (var providerIndex = 0;
+        providerIndex < providers.length;
+        providerIndex++) {
       final provider = providers[providerIndex];
-      final maxAttempts = retryTransportOnSameProvider ? 2 : 1;
-      for (var attempt = 0; attempt < maxAttempts; attempt++) {
-        if (attempt == 1) {
-          final prev = lastError;
-          if (prev == null || !isAiTransportFailure(prev)) break;
+      try {
+        final raw = await _client.vision(
+          provider: provider,
+          imageBytes: imageBytes,
+          prompt: prompt,
+          mimeType: mimeType,
+        );
+        return _parser.parse(raw);
+      } catch (e) {
+        lastError = e;
+        if (mayRecreateOnTransport && isAiTransportFailure(e)) {
+          mayRecreateOnTransport = false;
           logger.info(
             'AI',
-            '${_networkRetryDelay.inSeconds}s 后重试 '
-            'provider=${provider.name} model=${provider.visionModel}',
+            '首次传输失败 provider=${provider.name}，'
+            '重建 HTTP Client 后整轮换商',
           );
-          await Future<void>.delayed(_networkRetryDelay);
+          _client.recreateHttpClient();
+          providerIndex = -1; // 下一轮从 0 重跑完整列表
+          continue;
         }
-        try {
-          final raw = await _client.vision(
-            provider: provider,
-            imageBytes: imageBytes,
-            prompt: prompt,
-            mimeType: mimeType,
+        final next = providerIndex + 1 < providers.length
+            ? providers[providerIndex + 1]
+            : null;
+        if (next != null) {
+          logger.info(
+            'AI',
+            '切换 provider=${next.name} model=${next.visionModel} 重试',
           );
-          return _parser.parse(raw);
-        } catch (e) {
-          lastError = e;
-          final next = providerIndex + 1 < providers.length
-              ? providers[providerIndex + 1]
-              : null;
-          final switchNow = !retryTransportOnSameProvider ||
-              !isAiTransportFailure(e) ||
-              attempt == maxAttempts - 1;
-          if (switchNow && next != null) {
-            logger.info(
-              'AI',
-              '切换 provider=${next.name} model=${next.visionModel} 重试',
-            );
-            onSwitch?.call(
-              AiVisionSwitchEvent(
-                failureMessage: aiVisionErrorMessage(e),
-                nextProviderName: next.name,
-                nextModel: next.visionModel,
-              ),
-            );
-          }
-          if (switchNow) break;
+          onSwitch?.call(
+            AiVisionSwitchEvent(
+              failureMessage: aiVisionErrorMessage(e),
+              nextProviderName: next.name,
+              nextModel: next.visionModel,
+            ),
+          );
         }
       }
     }

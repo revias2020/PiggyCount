@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../widgets/pig_toast.dart';
+
 /// 权限申请结果，带中文可读原因。
 class PermissionOutcome {
   const PermissionOutcome({
@@ -87,23 +89,20 @@ abstract final class AppPermissions {
     );
   }
 
-  /// SnackBar + 可选「去设置」。
+  /// 权限拒绝反馈：可开设置 → Dialog；否则轻提示（ADR-071）。
   static void showDenied(
     BuildContext context,
     PermissionOutcome outcome,
   ) {
     if (outcome.granted || outcome.message == null) return;
-    final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(
-      SnackBar(
-        content: Text(outcome.message!),
-        action: outcome.canOpenSettings
-            ? SnackBarAction(
-                label: '去设置',
-                onPressed: openAppSettings,
-              )
-            : null,
-      ),
-    );
+    if (outcome.canOpenSettings) {
+      showActionHintDialog(
+        context,
+        message: outcome.message!,
+        onAction: openAppSettings,
+      );
+      return;
+    }
+    PigToast.show(context, outcome.message!);
   }
 }

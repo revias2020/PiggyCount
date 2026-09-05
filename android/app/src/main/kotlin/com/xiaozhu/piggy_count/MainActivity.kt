@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
 import androidx.activity.OnBackPressedCallback
@@ -84,6 +85,19 @@ class MainActivity : FlutterFragmentActivity() {
                         stopScreenshotObserver()
                         result.success(true)
                     }
+                    "resumeScreenshotScan" -> {
+                        val obs = screenshotObserver
+                        if (obs == null) {
+                            result.success(false)
+                        } else {
+                            @Suppress("UNCHECKED_CAST")
+                            val args = call.arguments as? Map<*, *>
+                            val since = (args?.get("sinceEpochSeconds") as? Number)
+                                ?.toLong()
+                            obs.scanMissedForResume(sinceEpochSeconds = since)
+                            result.success(true)
+                        }
+                    }
                     "setWatchDirectories" -> {
                         @Suppress("UNCHECKED_CAST")
                         val dirs = (call.arguments as? Map<*, *>)
@@ -111,6 +125,13 @@ class MainActivity : FlutterFragmentActivity() {
                     "normalizeWatchDirectory" -> {
                         val raw = call.arguments as? String
                         result.success(raw?.let(ScreenshotWatchPaths::normalize))
+                    }
+                    "getPrimaryStorageRoot" -> {
+                        @Suppress("DEPRECATION")
+                        val root = Environment.getExternalStorageDirectory()
+                            .absolutePath
+                            .trimEnd('/')
+                        result.success(root)
                     }
                     else -> result.notImplemented()
                 }
@@ -295,14 +316,26 @@ class MainActivity : FlutterFragmentActivity() {
             onScreenshotDetected = { path ->
                 channel.invokeMethod("onScreenshotDetected", path)
             },
-            onScreenshotProgress = { path ->
+            onScreenshotProgress = { path, resume ->
                 // 与关联窗检出日志同拍：原生先贴 FGS，避免仅靠 Dart 通知在后台迟到。
-                AutoBillingForegroundService.start(
-                    this,
-                    "检测到截图",
-                    "等待确认后识别…",
+                // 补扫立刻门闩，用独立文案（ADR-076），禁止「等待确认」。
+                if (resume) {
+                    AutoBillingForegroundService.start(
+                        this,
+                        "补扫到截图",
+                        "正在补识别…",
+                    )
+                } else {
+                    AutoBillingForegroundService.start(
+                        this,
+                        "检测到截图",
+                        "等待确认后识别…",
+                    )
+                }
+                channel.invokeMethod(
+                    "onScreenshotProgress",
+                    mapOf("path" to path, "resume" to resume),
                 )
-                channel.invokeMethod("onScreenshotProgress", path)
             },
             onScreenshotSuperseded = { oldPath, newPath ->
                 channel.invokeMethod(

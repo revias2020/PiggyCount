@@ -56,7 +56,7 @@ class AiVisionSwitchEvent {
 
 typedef AiVisionSwitchCallback = void Function(AiVisionSwitchEvent event);
 
-/// 是否属于传输层失败（可 3s 后重试同服务商）。
+/// 是否属于传输层失败（后台直存可入阻塞队列；前后台均不再同商连打，ADR-072）。
 bool isAiTransportFailure(Object error) {
   if (error is AiTestCancelledException) return false;
   if (error is TimeoutException) return true;

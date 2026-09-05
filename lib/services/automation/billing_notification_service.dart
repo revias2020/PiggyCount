@@ -121,14 +121,18 @@ class BillingNotificationService {
     }
   }
 
+  /// [clearProgress]：默认清进度 1001。关联窗取消且 FGS 仍被分享/批次持有时传 false（ADR-076）。
   Future<void> showResult({
     required String title,
     required String body,
     required bool success,
+    bool clearProgress = true,
   }) async {
     try {
       await ensureInitialized();
-      await _plugin.cancel(id: progressId);
+      if (clearProgress) {
+        await _plugin.cancel(id: progressId);
+      }
       if (!success) {
         lastFailureBody = body;
         lastFailureTitle = title;

@@ -12,6 +12,7 @@ import '../../styles/tokens.dart';
 import '../../widgets/import_progress_layer.dart';
 import 'data_manage_page.dart';
 import 'import_mapping_pickers.dart';
+import '../../widgets/pig_toast.dart';
 
 enum _MapStep { columns, categories, tags }
 
@@ -211,9 +212,7 @@ class _ImportMappingPageState extends ConsumerState<ImportMappingPage> {
     if (!_columns.isReady) return;
     final ledgerId = ref.read(currentLedgerIdProvider);
     if (ledgerId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('当前账本未就绪，请稍后重试')),
-      );
+      PigToast.show(context, '当前账本未就绪，请稍后重试');
       return;
     }
     try {
@@ -235,9 +234,7 @@ class _ImportMappingPageState extends ConsumerState<ImportMappingPage> {
       Navigator.of(context).pop(n);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导入失败：$e')),
-      );
+      PigToast.show(context, '导入失败：$e');
     }
   }
 

@@ -7,6 +7,7 @@ import '../../providers/ai_providers.dart';
 import '../../services/system/logger_service.dart';
 import '../../styles/tokens.dart';
 import '../../widgets/ai/ai_setup_helpers.dart';
+import '../../widgets/pig_toast.dart';
 
 enum _TestStatus { idle, testing, success, failed }
 
@@ -415,9 +416,7 @@ class _AiProviderEditPageState extends ConsumerState<AiProviderEditPage> {
       Navigator.of(context).pop();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('保存失败：$e')),
-      );
+      PigToast.show(context, '保存失败：$e');
     } finally {
       if (mounted) setState(() => _saving = false);
     }

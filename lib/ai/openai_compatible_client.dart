@@ -11,9 +11,20 @@ import 'ai_vision_failure.dart';
 /// OpenAI 兼容 Chat Completions（智谱与自定义共用）。
 class OpenAiCompatibleClient {
   OpenAiCompatibleClient({http.Client? httpClient})
-      : _http = httpClient ?? http.Client();
+      : _http = httpClient ?? http.Client(),
+        _ownsHttp = httpClient == null;
 
-  final http.Client _http;
+  http.Client _http;
+  final bool _ownsHttp;
+
+  /// 后台传输 abort 后丢弃可能已死的连接池，再建生产用 Client（ADR-073）。
+  void recreateHttpClient() {
+    if (!_ownsHttp) return;
+    try {
+      _http.close();
+    } catch (_) {}
+    _http = http.Client();
+  }
 
   /// 连接测试专用 Client；[cancelTests] 时 close，打断进行中的测连。
   http.Client? _testHttp;
