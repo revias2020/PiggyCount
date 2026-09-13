@@ -68,6 +68,8 @@ internal object SharedImageIngress {
         input.use { inp ->
             out.outputStream().use { o -> inp.copyTo(o) }
         }
+        // ADR-077：记下相册/截图原名，供补扫按 DISPLAY_NAME 去重；查不到则跳过入队。
+        ScreenshotNameFifo.remember(context, ScreenshotNameFifo.displayNameOf(context, uri))
         return out.absolutePath
     }
 

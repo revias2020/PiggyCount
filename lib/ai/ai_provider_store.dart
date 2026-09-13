@@ -5,8 +5,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'ai_config.dart';
 import 'ai_provider_config.dart';
+import 'ai_provider_config_package.dart';
 
-/// 多服务商 + 能力绑定存储（ADR-009 / ADR-032）；含旧版单配置 M1 迁移。
+/// 多服务商 + 能力绑定存储（ADR-009 / ADR-032 / ADR-078 / ADR-079）；含旧版单配置 M1 迁移。
 class AiProviderStore {
   static const providersKey = 'ai_providers_v2';
   static const bindingKey = 'ai_capability_binding_v2';
@@ -21,7 +22,9 @@ class AiProviderStore {
       raw = prefs.getString(providersKey);
     }
     if (raw == null || raw.isEmpty) {
-      final defaults = [AiServiceProvider.zhipuDefault];
+      final defaults = List<AiServiceProvider>.from(
+        AiServiceProvider.builtInDefaults,
+      );
       await _saveProviders(prefs, defaults);
       await _ensureBinding(prefs);
       return defaults;
@@ -30,9 +33,11 @@ class AiProviderStore {
       final list = (jsonDecode(raw) as List)
           .map((e) => AiServiceProvider.fromJson(e as Map<String, dynamic>))
           .toList();
-      return _ensureZhipuPresent(prefs, list);
+      return _ensureBuiltInsPresent(prefs, list);
     } catch (_) {
-      final defaults = [AiServiceProvider.zhipuDefault];
+      final defaults = List<AiServiceProvider>.from(
+        AiServiceProvider.builtInDefaults,
+      );
       await _saveProviders(prefs, defaults);
       return defaults;
     }
@@ -40,7 +45,7 @@ class AiProviderStore {
 
   Future<AiCapabilityBinding> loadBinding() async {
     final prefs = await SharedPreferences.getInstance();
-    await loadProviders(); // 触发迁移与内置智谱兜底
+    await loadProviders(); // 触发迁移与内置服务商兜底
     final raw = prefs.getString(bindingKey);
     if (raw == null || raw.isEmpty) {
       await prefs.setString(
@@ -269,27 +274,143 @@ class AiProviderStore {
     return '$ready 个服务商已配置';
   }
 
-  Future<List<AiServiceProvider>> _ensureZhipuPresent(
+  /// 导出服务商配置包文本（ADR-079）。
+  Future<String> exportConfigPackage() async {
+    final providers = await loadProviders();
+    final binding = await loadBinding();
+    return AiProviderConfigPackage(
+      version: AiProviderConfigPackage.currentVersion,
+      providers: providers,
+      binding: binding,
+    ).encode();
+  }
+
+  /// 导入服务商配置包；失败抛 [FormatException] / [AiProviderConfigPackageException]。
+  Future<void> importConfigPackage(
+    String raw, {
+    required AiProviderImportMode mode,
+  }) async {
+    final pkg = AiProviderConfigPackage.parse(raw);
+    final prefs = await SharedPreferences.getInstance();
+
+    late final List<AiServiceProvider> next;
+    switch (mode) {
+      case AiProviderImportMode.overwrite:
+        next = List<AiServiceProvider>.from(pkg.providers);
+      case AiProviderImportMode.merge:
+        next = _mergeProviders(await loadProviders(), pkg.providers);
+        final customCount = next.where((p) => !p.isBuiltIn).length;
+        if (customCount > maxCustomProviders) {
+          throw AiProviderConfigPackageException(
+            '合并后自定义服务商将超过 $maxCustomProviders 个，已取消导入',
+          );
+        }
+    }
+
+    final ensured = _withBuiltInsPresent(next);
+    final customAfter = ensured.where((p) => !p.isBuiltIn).length;
+    if (customAfter > maxCustomProviders) {
+      throw AiProviderConfigPackageException(
+        '自定义服务商最多 $maxCustomProviders 个',
+      );
+    }
+    await _saveProviders(prefs, ensured);
+    await prefs.setString(
+      bindingKey,
+      jsonEncode(pkg.binding.toJson()),
+    );
+  }
+
+  /// 按 id 合并：已有则更新可变字段，没有则追加。
+  List<AiServiceProvider> _mergeProviders(
+    List<AiServiceProvider> current,
+    List<AiServiceProvider> incoming,
+  ) {
+    final list = List<AiServiceProvider>.from(current);
+    for (final raw in incoming) {
+      final next = AiProviderConfigPackage.normalizeImported(raw);
+      final i = list.indexWhere((p) => p.id == next.id);
+      if (i < 0) {
+        list.add(next);
+        continue;
+      }
+      final existing = list[i];
+      if (existing.isBuiltIn ||
+          AiServiceProvider.builtInTemplate(next.id) != null) {
+        list[i] = existing
+            .copyWith(
+              apiKey: next.apiKey,
+              textModel: next.textModel,
+              visionModel: next.visionModel,
+              voiceModel: next.voiceModel,
+              textTestStatus: next.textTestStatus,
+              visionTestStatus: next.visionTestStatus,
+              voiceTestStatus: next.voiceTestStatus,
+              createdAt: next.createdAt,
+            )
+            .applyBuiltInLocks();
+      } else {
+        list[i] = next;
+      }
+    }
+    return list;
+  }
+
+  Future<List<AiServiceProvider>> _ensureBuiltInsPresent(
     SharedPreferences prefs,
     List<AiServiceProvider> list,
   ) async {
-    var next = list;
-    if (!next.any((p) => p.id == AiServiceProvider.zhipuId)) {
-      next = [AiServiceProvider.zhipuDefault, ...next];
+    final next = _withBuiltInsPresent(list);
+    final changed = next.length != list.length ||
+        !_sameProviderSnapshots(list, next);
+    if (changed) {
       await _saveProviders(prefs, next);
-    } else {
-      // 补齐内置智谱缺失的语音模型字段（ADR-052）。
-      final i = next.indexWhere((p) => p.id == AiServiceProvider.zhipuId);
-      if (i >= 0 && next[i].voiceModel.trim().isEmpty) {
-        next = List<AiServiceProvider>.from(next);
-        next[i] = next[i].copyWith(
-          voiceModel: AiServiceProvider.zhipuDefaultVoiceModel,
-        );
-        await _saveProviders(prefs, next);
-      }
     }
     await _ensureBinding(prefs);
     return next;
+  }
+
+  /// 内存内补齐/校正内置；不落盘。
+  List<AiServiceProvider> _withBuiltInsPresent(List<AiServiceProvider> list) {
+    var next = List<AiServiceProvider>.from(list);
+
+    final zhipuIndex =
+        next.indexWhere((p) => p.id == AiServiceProvider.zhipuId);
+    if (zhipuIndex < 0) {
+      next.insert(0, AiServiceProvider.zhipuDefault);
+    } else {
+      var zhipu = next[zhipuIndex];
+      if (zhipu.voiceModel.trim().isEmpty) {
+        zhipu = zhipu.copyWith(
+          voiceModel: AiServiceProvider.zhipuDefaultVoiceModel,
+        );
+      }
+      next[zhipuIndex] = zhipu.applyBuiltInLocks();
+    }
+
+    final agnesIndex =
+        next.indexWhere((p) => p.id == AiServiceProvider.agnesId);
+    if (agnesIndex < 0) {
+      final afterZhipu =
+          next.indexWhere((p) => p.id == AiServiceProvider.zhipuId);
+      final insertAt = afterZhipu >= 0 ? afterZhipu + 1 : 0;
+      next.insert(insertAt, AiServiceProvider.agnesDefault);
+    } else {
+      next[agnesIndex] = next[agnesIndex].applyBuiltInLocks();
+    }
+
+    return next;
+  }
+
+  bool _sameProviderSnapshots(
+    List<AiServiceProvider> a,
+    List<AiServiceProvider> b,
+  ) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].toJson().toString() != b[i].toJson().toString()) return false;
+    }
+    return true;
   }
 
   Future<void> _ensureBinding(SharedPreferences prefs) async {
@@ -316,7 +437,9 @@ class AiProviderStore {
   Future<void> _migrateFromLegacy(SharedPreferences prefs) async {
     final legacyRaw = prefs.getString(legacyConfigKey);
     if (legacyRaw == null || legacyRaw.isEmpty) {
-      final defaults = [AiServiceProvider.zhipuDefault];
+      final defaults = List<AiServiceProvider>.from(
+        AiServiceProvider.builtInDefaults,
+      );
       await _saveProviders(prefs, defaults);
       await prefs.setString(
         bindingKey,
@@ -333,7 +456,9 @@ class AiProviderStore {
     }
 
     if (legacy == null) {
-      final defaults = [AiServiceProvider.zhipuDefault];
+      final defaults = List<AiServiceProvider>.from(
+        AiServiceProvider.builtInDefaults,
+      );
       await _saveProviders(prefs, defaults);
       await prefs.setString(
         bindingKey,
@@ -352,7 +477,10 @@ class AiProviderStore {
             ? AiServiceProvider.zhipuDefaultVisionModel
             : legacy.visionModel,
       );
-      await _saveProviders(prefs, [zhipu]);
+      await _saveProviders(prefs, [
+        zhipu,
+        AiServiceProvider.agnesDefault,
+      ]);
       await prefs.setString(
         bindingKey,
         jsonEncode(AiCapabilityBinding.defaultBinding.toJson()),
@@ -373,7 +501,11 @@ class AiProviderStore {
         voiceModel: '',
         createdAt: DateTime.now(),
       );
-      await _saveProviders(prefs, [AiServiceProvider.zhipuDefault, custom]);
+      await _saveProviders(prefs, [
+        AiServiceProvider.zhipuDefault,
+        AiServiceProvider.agnesDefault,
+        custom,
+      ]);
       await prefs.setString(
         bindingKey,
         jsonEncode(

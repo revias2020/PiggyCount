@@ -1,4 +1,4 @@
-/// AI 服务商与能力绑定（ADR-009 / ADR-032 / ADR-052）。
+/// AI 服务商与能力绑定（ADR-009 / ADR-032 / ADR-052 / ADR-078）。
 library;
 
 /// 能力类型：文本 / 视觉 / 语音直接记账。
@@ -69,6 +69,12 @@ class AiServiceProvider {
   static const zhipuDefaultVisionModel = 'glm-4v-flash';
   static const zhipuDefaultVoiceModel = 'glm-4-voice';
 
+  static const agnesId = 'agnes_ai';
+  static const agnesDefaultBaseUrl = 'https://apihub.agnes-ai.com/v1';
+  static const agnesDefaultTextModel = 'agnes-2.5-flash';
+  static const agnesDefaultVisionModel = 'agnes-2.5-flash';
+  static const agnesDefaultVoiceModel = '';
+
   /// 内置智谱（不可删除）。
   static AiServiceProvider get zhipuDefault => AiServiceProvider(
         id: zhipuId,
@@ -81,6 +87,48 @@ class AiServiceProvider {
         voiceModel: zhipuDefaultVoiceModel,
         createdAt: DateTime(2024, 1, 1),
       );
+
+  /// 内置 Agnes AI（不可删除；ADR-078）。
+  static AiServiceProvider get agnesDefault => AiServiceProvider(
+        id: agnesId,
+        name: 'Agnes AI',
+        isBuiltIn: true,
+        apiKey: '',
+        baseUrl: agnesDefaultBaseUrl,
+        textModel: agnesDefaultTextModel,
+        visionModel: agnesDefaultVisionModel,
+        voiceModel: agnesDefaultVoiceModel,
+        createdAt: DateTime(2024, 1, 1),
+      );
+
+  /// 内置模板顺序：智谱 → Agnes。
+  static List<AiServiceProvider> get builtInDefaults => [
+        zhipuDefault,
+        agnesDefault,
+      ];
+
+  /// 按 id 取内置模板；非内置返回 null。
+  static AiServiceProvider? builtInTemplate(String id) => switch (id) {
+        zhipuId => zhipuDefault,
+        agnesId => agnesDefault,
+        _ => null,
+      };
+
+  /// 校正内置锁定字段（name / baseUrl / isBuiltIn）；非内置原样返回。
+  AiServiceProvider applyBuiltInLocks() {
+    final template = builtInTemplate(id);
+    if (template == null) return this;
+    if (name == template.name &&
+        baseUrl == template.baseUrl &&
+        isBuiltIn) {
+      return this;
+    }
+    return copyWith(
+      name: template.name,
+      baseUrl: template.baseUrl,
+      isBuiltIn: true,
+    );
+  }
 
   bool get isValid => apiKey.trim().isNotEmpty;
 

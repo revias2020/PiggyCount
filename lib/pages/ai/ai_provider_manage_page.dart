@@ -1,21 +1,210 @@
+import 'dart:convert';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../ai/ai_provider_config.dart';
+import '../../ai/ai_provider_config_package.dart';
 import '../../ai/ai_provider_store.dart';
 import '../../providers/ai_providers.dart';
+import '../../services/system/local_export_service.dart';
 import '../../styles/tokens.dart';
 import '../../widgets/ai/ai_setup_helpers.dart';
 import '../../widgets/page_status.dart';
 import 'ai_provider_edit_page.dart';
 import '../../widgets/pig_toast.dart';
 
-/// 服务商列表：内置智谱 + 最多 5 个自定义。
-class AiProviderManagePage extends ConsumerWidget {
+/// 服务商列表：内置（智谱 / Agnes）+ 最多 5 个自定义；支持配置包导入导出（ADR-079）。
+class AiProviderManagePage extends ConsumerStatefulWidget {
   const AiProviderManagePage({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<AiProviderManagePage> createState() =>
+      _AiProviderManagePageState();
+}
+
+class _AiProviderManagePageState extends ConsumerState<AiProviderManagePage> {
+  bool _busy = false;
+
+  void _invalidateProviders() {
+    ref.invalidate(aiProvidersListProvider);
+    ref.invalidate(aiCapabilityBindingProvider);
+    ref.invalidate(aiMineSubtitleProvider);
+    ref.invalidate(textCapabilityReadyProvider);
+  }
+
+  Future<void> _exportPackage() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('导出服务商配置'),
+        content: const Text(
+          '导出文件包含 API Key，请妥善保管，勿发给他人或上传网盘。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('确认导出'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    setState(() => _busy = true);
+    try {
+      final content =
+          await ref.read(aiProviderStoreProvider).exportConfigPackage();
+      final stamp = LocalExportService.fileStamp();
+      final result = await LocalExportService.exportText(
+        fileName: 'piggy_ai_config_$stamp.txt',
+        content: content,
+        mimeType: 'text/plain',
+        shareSubject: '小猪记账 AI 服务商配置',
+      );
+      if (!mounted) return;
+      PigToast.show(context, result.successMessage);
+    } catch (e) {
+      if (!mounted) return;
+      PigToast.show(context, '导出失败：$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _importPackage() async {
+    final file = await FilePicker.pickFile(
+      type: FileType.custom,
+      allowedExtensions: const ['txt'],
+    );
+    if (file == null || !mounted) return;
+
+    final mode = await showDialog<AiProviderImportMode>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('选择导入模式'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.merge_type),
+              title: const Text('合并'),
+              subtitle: const Text('按 id 更新/新增；都会写入能力绑定'),
+              onTap: () => Navigator.pop(ctx, AiProviderImportMode.merge),
+            ),
+            ListTile(
+              leading: const Icon(Icons.restart_alt),
+              title: const Text('覆盖'),
+              subtitle: const Text('用文件重建服务商列表后再写能力绑定'),
+              onTap: () => Navigator.pop(ctx, AiProviderImportMode.overwrite),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    );
+    if (mode == null || !mounted) return;
+
+    setState(() => _busy = true);
+    try {
+      final raw = utf8.decode(await file.readAsBytes(), allowMalformed: true);
+      await ref.read(aiProviderStoreProvider).importConfigPackage(
+            raw,
+            mode: mode,
+          );
+      _invalidateProviders();
+      if (!mounted) return;
+      PigToast.show(
+        context,
+        mode == AiProviderImportMode.merge ? '合并导入完成' : '覆盖导入完成',
+      );
+    } on FormatException catch (e) {
+      if (!mounted) return;
+      PigToast.show(context, e.message);
+    } on AiProviderConfigPackageException catch (e) {
+      if (!mounted) return;
+      PigToast.show(context, '$e');
+    } catch (e) {
+      if (!mounted) return;
+      PigToast.show(context, '导入失败：$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _add() async {
+    final store = ref.read(aiProviderStoreProvider);
+    if (!await store.canAddCustomProvider()) {
+      if (!mounted) return;
+      PigToast.show(
+        context,
+        '自定义服务商最多 ${AiProviderStore.maxCustomProviders} 个',
+      );
+      return;
+    }
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const AiProviderEditPage(),
+      ),
+    );
+    _invalidateProviders();
+  }
+
+  Future<void> _edit(AiServiceProvider provider) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => AiProviderEditPage(provider: provider),
+      ),
+    );
+    _invalidateProviders();
+  }
+
+  Future<void> _delete(AiServiceProvider provider) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除服务商'),
+        content: Text('确定删除「${provider.name}」？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await ref.read(aiProviderStoreProvider).deleteProvider(provider.id);
+      _invalidateProviders();
+      if (!mounted) return;
+      PigToast.show(context, '已删除');
+    } on AiProviderInUseException catch (e) {
+      if (!mounted) return;
+      PigToast.show(context, '$e');
+    } catch (e) {
+      if (!mounted) return;
+      PigToast.show(context, '删除失败：$e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final providersAsync = ref.watch(aiProvidersListProvider);
     final bindingAsync = ref.watch(aiCapabilityBindingProvider);
 
@@ -25,9 +214,19 @@ class AiProviderManagePage extends ConsumerWidget {
         title: const Text('服务商管理'),
         actions: [
           IconButton(
+            tooltip: '导入配置',
+            icon: const Icon(Icons.file_upload_outlined),
+            onPressed: _busy ? null : _importPackage,
+          ),
+          IconButton(
+            tooltip: '导出配置',
+            icon: const Icon(Icons.file_download_outlined),
+            onPressed: _busy ? null : _exportPackage,
+          ),
+          IconButton(
             tooltip: '添加',
             icon: const Icon(Icons.add),
-            onPressed: () => _add(context, ref),
+            onPressed: _busy ? null : _add,
           ),
         ],
       ),
@@ -46,85 +245,14 @@ class AiProviderManagePage extends ConsumerWidget {
               return _ProviderCard(
                 provider: p,
                 binding: binding,
-                onTap: () => _edit(context, ref, p),
-                onDelete: p.isBuiltIn
-                    ? null
-                    : () => _delete(context, ref, p),
+                onTap: () => _edit(p),
+                onDelete: p.isBuiltIn ? null : () => _delete(p),
               );
             },
           );
         },
       ),
     );
-  }
-
-  Future<void> _add(BuildContext context, WidgetRef ref) async {
-    final store = ref.read(aiProviderStoreProvider);
-    if (!await store.canAddCustomProvider()) {
-      if (!context.mounted) return;
-      PigToast.show(context, '自定义服务商最多 ${AiProviderStore.maxCustomProviders} 个');
-      return;
-    }
-    if (!context.mounted) return;
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => const AiProviderEditPage(),
-      ),
-    );
-    ref.invalidate(aiProvidersListProvider);
-    ref.invalidate(aiMineSubtitleProvider);
-  }
-
-  Future<void> _edit(
-    BuildContext context,
-    WidgetRef ref,
-    AiServiceProvider provider,
-  ) async {
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => AiProviderEditPage(provider: provider),
-      ),
-    );
-    ref.invalidate(aiProvidersListProvider);
-    ref.invalidate(aiMineSubtitleProvider);
-  }
-
-  Future<void> _delete(
-    BuildContext context,
-    WidgetRef ref,
-    AiServiceProvider provider,
-  ) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('删除服务商'),
-        content: Text('确定删除「${provider.name}」？'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true || !context.mounted) return;
-    try {
-      await ref.read(aiProviderStoreProvider).deleteProvider(provider.id);
-      ref.invalidate(aiProvidersListProvider);
-      ref.invalidate(aiMineSubtitleProvider);
-      if (!context.mounted) return;
-      PigToast.show(context, '已删除');
-    } on AiProviderInUseException catch (e) {
-      if (!context.mounted) return;
-      PigToast.show(context, '$e');
-    } catch (e) {
-      if (!context.mounted) return;
-      PigToast.show(context, '删除失败：$e');
-    }
   }
 }
 

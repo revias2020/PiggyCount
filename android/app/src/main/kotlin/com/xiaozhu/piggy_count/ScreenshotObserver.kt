@@ -11,6 +11,9 @@ import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * MediaStore ContentObserver：单关联窗 + 短观察 + 删原短等（ADR-068；取代 045/048/064 中稳定期与 ±15s 补扫）。
@@ -22,6 +25,7 @@ import java.io.File
  * - 真替换：立刻入账门闩（不再等剩余关联窗）。
  * - 非候选过滤：回收站 / IS_TRASHED / trash·@delete 编码名不进候选。
  * - 监听目录 ∩ 关键词（ADR-070）：空目录时不应注册本 Observer。
+ * - 近期原名 FIFO（ADR-077）：分享入账记下 DISPLAY_NAME，补扫/门闩命中则跳过。
  */
 class ScreenshotObserver(
     private val context: Context,
@@ -142,7 +146,7 @@ class ScreenshotObserver(
                     val keywordHit = ScreenshotWatchPaths.keywordHit(path, name)
                     if (keywordHit) {
                         settleLog(
-                            "超龄丢弃：age=${age}s > ${MAX_AGE_SECONDS}s file=$name",
+                            "超时丢弃：检出已超过${MAX_AGE_SECONDS}秒（实际${age}秒） file=$name",
                         )
                     }
                     clearRetry(uri)
@@ -212,7 +216,10 @@ class ScreenshotObserver(
                     }
                 }
                 if (gateImmediately) {
-                    settleLog("回前台补扫：since=${sinceExclusive}s 立刻门闩 $offered 张")
+                    settleLog(
+                        "回前台补扫完成：${offered} 张立刻入队（跳过关联窗） · " +
+                            "since=${formatSince(sinceExclusive)}",
+                    )
                 }
             }
         } catch (e: Exception) {
@@ -236,10 +243,11 @@ class ScreenshotObserver(
         if (watchDirectories.isEmpty()) return false
         if (!ScreenshotWatchPaths.matches(path, watchDirectories)) return false
         if (processed.contains(path)) return false
+        if (ScreenshotNameFifo.contains(context, name)) return false
         if (candidates.containsKey(path)) return false
         if (!fileAlive(path)) return false
 
-        settleLog("回前台补扫：立刻入账 file=$name size=$size")
+        settleLog("补扫命中：立刻入队 file=$name size=$size")
         val c = Candidate(
             path = path,
             name = name,
@@ -267,6 +275,7 @@ class ScreenshotObserver(
         if (watchDirectories.isEmpty()) return
         if (!ScreenshotWatchPaths.matches(path, watchDirectories)) return
         if (processed.contains(path)) return
+        if (ScreenshotNameFifo.contains(context, name)) return
 
         val existing = candidates[path]
         if (existing != null) {
@@ -287,14 +296,14 @@ class ScreenshotObserver(
             it.path != path && it.awaitingSuccessor
         }
         if (waiter != null) {
-            settleLog("删原短等：命中后继 file=$name ← ${waiter.name}")
+            settleLog("删图后短等：命中后继 file=$name ← ${waiter.name}")
             applyReplace(oldPath = waiter.path, new = c)
             return
         }
 
         settleLog(
-            "关联窗：检测到新截图，等待 ${ASSOC_MS / 1000}s；" +
-                "短观察/删原短等各 ${OBSERVE_MS / 1000}s file=$name size=$size",
+            "关联窗：检测到新截图，等待 ${ASSOC_MS / 1000}秒确认；" +
+                "连拍观察/删图后短等各 ${OBSERVE_MS / 1000}秒 file=$name size=$size",
         )
         emitEarlyProgress(c)
 
@@ -316,7 +325,7 @@ class ScreenshotObserver(
                 existing.deleteWaitRunnable?.let { handler.removeCallbacks(it) }
                 existing.deleteWaitRunnable = null
                 existing.lastSize = size
-                settleLog("删原短等：原路径恢复，继续关联窗 file=${existing.name}")
+                settleLog("删图后短等：原路径恢复，继续等待确认 file=${existing.name}")
                 scheduleGate(existing)
             }
             return
@@ -326,7 +335,7 @@ class ScreenshotObserver(
             return
         }
         existing.lastSize = size
-        settleLog("同路径：不重置关联窗 file=$name size=$size")
+        settleLog("同路径：不重开等待确认倒计时 file=$name size=$size")
     }
 
     private fun emitEarlyProgress(c: Candidate, resume: Boolean = false) {
@@ -377,7 +386,9 @@ class ScreenshotObserver(
         a.gateRunnable = null
         b.gateRunnable = null
 
-        settleLog("短观察：开始 ${OBSERVE_MS / 1000}s a=${a.name} b=${b.name}")
+        settleLog(
+            "连拍观察：开始 ${OBSERVE_MS / 1000}秒 · 图1=${a.name} 图2=${b.name}",
+        )
 
         val r = Runnable { resolveObservation(a.path, b.path) }
         a.observeRunnable = r
@@ -412,20 +423,22 @@ class ScreenshotObserver(
 
         when {
             aAlive && bAlive -> {
-                settleLog("短观察：两张都在 → 连拍 a=${a!!.name} b=${b!!.name}")
+                settleLog(
+                    "连拍观察：两张都在 → 连拍 图1=${a!!.name} 图2=${b!!.name}",
+                )
                 scheduleGate(a)
                 scheduleGate(b)
             }
             !aAlive && bAlive -> {
-                settleLog("短观察：a 消失 → 替换为 b=${b!!.name}")
+                settleLog("连拍观察：图1消失 → 替换为 图2=${b!!.name}")
                 applyReplace(oldPath = pathA, new = b)
             }
             aAlive && !bAlive -> {
-                settleLog("短观察：b 消失 → 替换为 a=${a!!.name}")
+                settleLog("连拍观察：图2消失 → 替换为 图1=${a!!.name}")
                 applyReplace(oldPath = pathB, new = a)
             }
             else -> {
-                settleLog("短观察：两张都消失，取消")
+                settleLog("连拍观察：两张都消失，取消")
                 dropCandidate(pathB)
                 cancelWithNotify(pathA)
             }
@@ -438,7 +451,7 @@ class ScreenshotObserver(
             clearTimers(old)
             candidates.remove(oldPath)
         }
-        settleLog("替换：立刻入账 file=${new.name}")
+        settleLog("替换：立刻入队 file=${new.name}")
         try {
             onScreenshotSuperseded(oldPath, new.path)
         } catch (e: Exception) {
@@ -461,7 +474,7 @@ class ScreenshotObserver(
         }
         if (c.awaitingSuccessor) return
         if (!fileAlive(c.path)) {
-            settleLog("门闩：文件已不存在 file=${c.name}")
+            settleLog("确认入队失败：文件已不存在 file=${c.name}")
             handleMissing(c.path)
             return
         }
@@ -477,11 +490,12 @@ class ScreenshotObserver(
         }
 
         processed.add(c.path)
+        ScreenshotNameFifo.remember(context, c.name)
         lastAcceptedAt = now
         persist()
         clearTimers(c)
         candidates.remove(c.path)
-        settleLog("门闩：通过，开始入账 file=${c.name}")
+        settleLog("确认入队：开始识别 file=${c.name}")
         try {
             onScreenshotDetected(c.path)
         } catch (e: Exception) {
@@ -513,7 +527,7 @@ class ScreenshotObserver(
         if (peerPath != null) {
             val peer = candidates[peerPath]
             if (peer != null && fileAlive(peerPath) && !peer.awaitingSuccessor) {
-                settleLog("删除：观察中旧图消失 → 立即按替换处理 file=${c.name}")
+                settleLog("删除：连拍观察中旧图消失 → 立即按替换处理 file=${c.name}")
                 clearObservation(c)
                 clearObservation(peer)
                 applyReplace(oldPath = path, new = peer)
@@ -545,7 +559,9 @@ class ScreenshotObserver(
         clearObservation(c)
         c.awaitingSuccessor = true
         c.deleteWaitRunnable?.let { handler.removeCallbacks(it) }
-        settleLog("删原短等：等待 ${DELETE_WAIT_MS / 1000}s 内出现新截图 file=${c.name}")
+        settleLog(
+            "删图后短等：等待 ${DELETE_WAIT_MS / 1000}秒内出现新截图 file=${c.name}",
+        )
         val r = Runnable { onDeleteWaitDue(c.path) }
         c.deleteWaitRunnable = r
         handler.postDelayed(r, DELETE_WAIT_MS)
@@ -562,11 +578,11 @@ class ScreenshotObserver(
             }
             .maxByOrNull { it.firstSeenAt }
         if (successor != null) {
-            settleLog("删原短等：到期命中后继 file=${successor.name}")
+            settleLog("删图后短等：到期命中后继 file=${successor.name}")
             applyReplace(oldPath = path, new = successor)
             return
         }
-        settleLog("删原短等：超时无后继，取消 file=${c.name}")
+        settleLog("删图后短等：超时无后继，取消 file=${c.name}")
         cancelWithNotify(path)
     }
 
@@ -609,6 +625,13 @@ class ScreenshotObserver(
         } catch (e: Exception) {
             Log.e(TAG, "onSettleLog failed", e)
         }
+    }
+
+    /** 日志用：`yyyy-MM-dd HH:mm:ss(unix秒)`（本地时区）。 */
+    private fun formatSince(epochSeconds: Long): String {
+        val formatted = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+            .format(Date(epochSeconds * 1000L))
+        return "$formatted($epochSeconds)"
     }
 
     private fun scheduleRetry(uri: Uri, attempt: Int, reason: String) {

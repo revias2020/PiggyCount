@@ -64,8 +64,6 @@ class _PiggyAppState extends ConsumerState<PiggyApp>
     final pending = ref.read(pendingReviewProvider.notifier);
     switch (state) {
       case AppLifecycleState.paused:
-        pending.clearHighlights();
-        unawaited(_onAppPaused());
       case AppLifecycleState.inactive:
       case AppLifecycleState.hidden:
       case AppLifecycleState.detached:
@@ -76,20 +74,7 @@ class _PiggyAppState extends ConsumerState<PiggyApp>
     }
   }
 
-  /// 进后台：记截图补扫水位 W（ADR-074）。
-  Future<void> _onAppPaused() async {
-    if (!Platform.isAndroid) return;
-    try {
-      final enabled =
-          await ref.read(settingsRepositoryProvider).screenshotAutoBilling();
-      if (!enabled) return;
-      await ref.read(screenshotMonitorServiceProvider).markPausedWatermark();
-    } catch (e) {
-      debugPrint('记录截图补扫水位失败: $e');
-    }
-  }
-
-  /// 回前台：阻塞重试 + 截图监听重绑/水位线补扫（ADR-054 / 073 / 074）。
+  /// 回前台：阻塞重试 + 截图监听重绑/水位线补扫（ADR-054 / 073 / 074 / 077）。
   Future<void> _onAppResumed() async {
     unawaited(ref.read(autoBillingServiceProvider).retryPendingOnResume());
     if (!Platform.isAndroid) return;

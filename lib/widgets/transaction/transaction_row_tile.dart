@@ -26,6 +26,7 @@ class TransactionRowTile extends ConsumerWidget {
     this.onToggleSelect,
     this.enableLongPressDelete = false,
     this.pendingHighlight = false,
+    this.showMonthDay = false,
   });
 
   final TransactionListItem item;
@@ -37,6 +38,8 @@ class TransactionRowTile extends ConsumerWidget {
   final bool enableLongPressDelete;
   /// 待核对高亮（ADR-050）：蓝描边 + 极浅蓝底。
   final bool pendingHighlight;
+  /// 分类/标签等跨天列表可显示固定两位月日，避免只有时分难以辨认。
+  final bool showMonthDay;
 
   void _openCategoryDetail(BuildContext context, WidgetRef ref) {
     final month = ref.read(detailsMonthProvider);
@@ -105,7 +108,9 @@ class TransactionRowTile extends ConsumerWidget {
         '${isExpense ? '-' : '+'}${formatMoneyCompact(tx.amount)}';
     final note = tx.note?.trim();
     final hasNote = note != null && note.isNotEmpty;
-    final timeText = DateFormat('HH:mm').format(tx.happenedAt);
+    final timeText = DateFormat(
+      showMonthDay ? 'MM-dd HH:mm' : 'HH:mm',
+    ).format(tx.happenedAt);
     final tags = item.tags;
     final highlightFill = PigTokens.primary.withValues(alpha: 0.06);
     final fadeColor = selected

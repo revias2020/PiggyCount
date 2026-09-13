@@ -15,6 +15,7 @@ import '../system/logger_service.dart';
 import 'billing_image_limits.dart';
 import 'billing_notification_service.dart';
 import 'pending_billing_retry_store.dart';
+import 'screenshot_resume_watermark.dart';
 import 'vision_image_prep.dart';
 
 /// 批次内分桶：入账/跳过按笔；失败/阻塞按张。
@@ -716,6 +717,10 @@ class AutoBillingService {
           rawBytes,
           mimeType: mime,
         );
+        // ADR-077：仅截图自动开始调 Vision 时推进补扫水位（分享/手动不写）。
+        if (source == 'screenshot') {
+          await ScreenshotResumeWatermark.advanceOnScreenshotAi();
+        }
         final bills = await bookkeeper.fromImageWithFallback(
           prepared.bytes,
           mimeType: prepared.mimeType,

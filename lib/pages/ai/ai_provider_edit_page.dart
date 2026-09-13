@@ -65,33 +65,29 @@ class _AiProviderEditPageState extends ConsumerState<AiProviderEditPage> {
   void initState() {
     super.initState();
     final p = widget.provider;
+    final template =
+        p != null ? AiServiceProvider.builtInTemplate(p.id) : null;
     _nameCtrl = TextEditingController(
       text: p?.name ?? '',
     );
     _keyCtrl = TextEditingController(text: p?.apiKey ?? '');
     _baseCtrl = TextEditingController(
       text: p?.baseUrl ??
-          (p?.isBuiltIn == true
-              ? AiServiceProvider.zhipuDefaultBaseUrl
-              : 'https://api.openai.com/v1'),
+          template?.baseUrl ??
+          'https://api.openai.com/v1',
     );
     _textModelCtrl = TextEditingController(
       text: p?.textModel ??
-          (p?.isBuiltIn == true
-              ? AiServiceProvider.zhipuDefaultTextModel
-              : 'gpt-4o-mini'),
+          template?.textModel ??
+          'gpt-4o-mini',
     );
     _visionModelCtrl = TextEditingController(
       text: p?.visionModel ??
-          (p?.isBuiltIn == true
-              ? AiServiceProvider.zhipuDefaultVisionModel
-              : 'gpt-4o-mini'),
+          template?.visionModel ??
+          'gpt-4o-mini',
     );
     _voiceModelCtrl = TextEditingController(
-      text: p?.voiceModel ??
-          (p?.isBuiltIn == true
-              ? AiServiceProvider.zhipuDefaultVoiceModel
-              : ''),
+      text: p?.voiceModel ?? template?.voiceModel ?? '',
     );
     _keyCtrl.addListener(_onCredentialsChanged);
     _baseCtrl.addListener(_onCredentialsChanged);
@@ -175,7 +171,7 @@ class _AiProviderEditPageState extends ConsumerState<AiProviderEditPage> {
     final persistVision = !_isEditing && visionModel.isEmpty
         ? 'gpt-4o-mini'
         : visionModel;
-    // 语音可空：新建自定义不补默认；内置智谱编辑走已有/默认值。
+    // 语音可空：新建自定义不补默认；内置编辑走已有值（可空）。
 
     if (_isBuiltIn && existing != null) {
       return existing.copyWith(

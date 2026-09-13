@@ -1,30 +1,38 @@
 import 'dart:io';
-import 'dart:math' as math;
 
 import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:intl/intl.dart';
 
 import '../../utils/app_permissions.dart';
 import '../../utils/screenshot_watch_path.dart';
 import '../system/logger_service.dart';
 import 'auto_billing_service.dart';
+import 'screenshot_resume_watermark.dart';
 
-/// Android 截图监听 Dart 端适配（ADR-068 / ADR-070 / ADR-074）。
+/// Android 截图监听 Dart 端适配（ADR-068 / ADR-070 / ADR-074 / ADR-077）。
 class ScreenshotMonitorService {
   ScreenshotMonitorService(this._autoBilling);
 
   static const _channel = MethodChannel('com.xiaozhu.piggy_count/screenshot');
 
-  /// 无水位时回退窗口（ADR-073 / 074）。
-  static const resumeFallbackAgeSeconds = 300;
+  /// 无水位时回退窗口（ADR-073 / 074 / 077）。
+  static const resumeFallbackAgeSeconds =
+      ScreenshotResumeWatermark.fallbackAgeSeconds;
 
-  /// 水位补扫时间封顶（ADR-074）。
-  static const resumeCapAgeSeconds = 24 * 60 * 60;
+  /// 水位补扫时间封顶（ADR-074 / 077）。
+  static const resumeCapAgeSeconds = ScreenshotResumeWatermark.capAgeSeconds;
 
-  static const _watermarkKey = 'piggy_screenshot_resume_watermark_sec';
+  static final _sinceFmt = DateFormat('yyyy-MM-dd HH:mm:ss');
 
   final AutoBillingService _autoBilling;
   bool _listening = false;
+
+  /// 日志用：`yyyy-MM-dd HH:mm:ss(unix秒)`（本地时区）。
+  static String formatSince(int epochSeconds) {
+    final local =
+        DateTime.fromMillisecondsSinceEpoch(epochSeconds * 1000, isUtc: false);
+    return '${_sinceFmt.format(local)}($epochSeconds)';
+  }
 
   bool get isListening => _listening;
 
@@ -89,7 +97,10 @@ class ScreenshotMonitorService {
     );
     _listening = ok == true;
     if (_listening) {
-      logger.info('Screenshot', '监听已启动 dirs=${directories.length}');
+      logger.info(
+        'Screenshot',
+        '监听已启动，目录 ${directories.length} 个',
+      );
     } else {
       logger.warning('Screenshot', '监听启动失败或目录无效');
     }
@@ -106,37 +117,31 @@ class ScreenshotMonitorService {
     return start(directories: directories);
   }
 
-  /// `paused` 时记下墙钟水位 W（ADR-074）。开关未开也可写，仅补扫时读取。
-  Future<void> markPausedWatermark() async {
-    if (!Platform.isAndroid) return;
-    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_watermarkKey, now);
-  }
-
-  /// 回前台水位线补扫（立刻门闩；ADR-074）。须已 [start]。
+  /// 回前台水位线补扫（立刻门闩；ADR-074 / 077）。须已 [start]。
   ///
-  /// 扫 `DATE_ADDED > max(W, now−24h)`；无 W 时 W≡`now−5min`。扫完将 W 设为 now。
+  /// 扫 `DATE_ADDED > max(W, now−24h)`；无 W 时回退近 5 分钟。
+  /// 不在此处推进 W（仅截图自动开始 Vision 时前进，见 [ScreenshotResumeWatermark]）。
   Future<bool> resumeScan() async {
     if (!Platform.isAndroid) return false;
     if (!_listening) return false;
     final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    final prefs = await SharedPreferences.getInstance();
-    final w = prefs.getInt(_watermarkKey);
-    final lower = w ?? (now - resumeFallbackAgeSeconds);
-    final sinceExclusive = math.max(lower, now - resumeCapAgeSeconds);
+    final w = await ScreenshotResumeWatermark.read();
+    final sinceExclusive = ScreenshotResumeWatermark.sinceExclusive(
+      now: now,
+      watermark: w,
+    );
     try {
       final ok = await _channel.invokeMethod<bool>(
         'resumeScreenshotScan',
         {'sinceEpochSeconds': sinceExclusive},
       );
       if (ok == true) {
-        await prefs.setInt(_watermarkKey, now);
+        final windowDesc = w != null
+            ? '自上次截图 AI 水位起查漏检（最多24小时）'
+            : '无水位，回退近5分钟（最多24小时）';
         logger.info(
           'Screenshot',
-          '回前台补扫：since=$sinceExclusive '
-          'w=${w ?? 'fallback${resumeFallbackAgeSeconds}s'} '
-          'cap=${resumeCapAgeSeconds}s',
+          '回前台补扫：$windowDesc · since=${formatSince(sinceExclusive)}',
         );
       }
       return ok == true;

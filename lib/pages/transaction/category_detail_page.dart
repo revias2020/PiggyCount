@@ -132,7 +132,10 @@ class _CategoryDetailPageState extends ConsumerState<CategoryDetailPage> {
                         itemBuilder: (context, i) {
                           return Material(
                             color: PigTokens.surface,
-                            child: TransactionRowTile(item: items[i]),
+                            child: TransactionRowTile(
+                              item: items[i],
+                              showMonthDay: true,
+                            ),
                           );
                         },
                       ),

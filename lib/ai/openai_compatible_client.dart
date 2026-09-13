@@ -8,7 +8,7 @@ import '../services/system/logger_service.dart';
 import 'ai_provider_config.dart';
 import 'ai_vision_failure.dart';
 
-/// OpenAI 兼容 Chat Completions（智谱与自定义共用）。
+/// OpenAI 兼容 Chat Completions（内置与自定义共用）。
 class OpenAiCompatibleClient {
   OpenAiCompatibleClient({http.Client? httpClient})
       : _http = httpClient ?? http.Client(),

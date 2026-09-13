@@ -1,5 +1,23 @@
 # 小猪记账 · 升级日志
 
+## 0.5.3
+
+**版本：** `0.5.3+14`
+**相对：** `0.5.2+13`
+**日期：** 2026-09-08
+
+### 截图补扫：水位与原名去重（ADR-077）
+
+水位 W 仅在截图自动开始调 Vision 时前进（`paused` / 补扫结束 / 分享不再写）。分享拷图记下原 `DISPLAY_NAME` 进长度 50 的 FIFO，补扫/门闩按名兜底跳过，避免与 cache 路径不一致导致重复识别。
+
+### 版本与文档
+
+- `pubspec.yaml` → `0.5.3+14`
+- `README.md` / `docs/version.md` 同步版本号
+- `docs/development.md`；`docs/adr/077-screenshot-resume-watermark-ai-name-fifo.md`
+
+---
+
 ## 0.5.2
 
 **版本：** `0.5.2+13`  

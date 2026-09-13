@@ -52,13 +52,18 @@ class GlanceSmallWidgetProvider : HomeWidgetProvider() {
                         setImageViewBitmap(R.id.widget_image, bitmap)
                     }
 
+                    val addExpensePi = WidgetLaunch.activityPendingIntent(
+                        context,
+                        widgetId * 10 + 1,
+                        "piggycount://new?type=expense",
+                    )
                     setOnClickPendingIntent(
-                        R.id.widget_click,
-                        WidgetLaunch.activityPendingIntent(
-                            context,
-                            widgetId,
-                            "piggycount://new?type=expense",
-                        ),
+                        R.id.click_add_top,
+                        addExpensePi,
+                    )
+                    setOnClickPendingIntent(
+                        R.id.click_add_bottom,
+                        addExpensePi,
                     )
                     setOnClickPendingIntent(
                         R.id.click_amount,

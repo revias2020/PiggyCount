@@ -269,7 +269,8 @@ ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040 / 051（及明细同步钮 ADR
 
 **配置：**
 
-- 内置智谱（名/Base 锁死）+ ≤5 OpenAI 兼容  
+- 内置服务商（智谱GLM、Agnes AI；名/Base 锁死，ADR-078）+ ≤5 OpenAI 兼容  
+- **服务商配置包（ADR-079）：** 服务商管理可导入/导出 `.txt`（JSON；含 Key、模型名、测通态与能力绑定）；导出前确认；导入选合并/覆盖；超限或包不完整整包失败  
 - 能力绑定：文本对话 / 图片理解 / **语音直接记账** 各一商；仅展示该侧**测通成功**者（语音模型可空=该商不支持）
 - 测连 timeout 15s；文本识别 30s、图片/语音识别 60s；保存时未测侧会打网；失败仍落盘，弹窗「返回编辑 / 确认保存」（确认则回服务商管理；遮罩/返回=留下）；绑定中的自定义商禁删  
 - **语音测连（ADR-059）：** 用 1s / 16-bit PCM / 8kHz 静音 WAV（对齐 BeeCount）；禁止空 data；静音空响应仍算测通；`input_audio` 在 content 中置于文本之前  
@@ -300,8 +301,8 @@ ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040 / 051（及明细同步钮 ADR
 
 ### 代码
 
-`ai_provider_config.dart` · `ai_provider_store.dart` · `openai_compatible_client.dart` · `prompt_builder.dart` · `ai_category_match.dart` · `extraction_engine.dart` · `ai_bookkeeper.dart` · `bill_creation_service.dart` · `ai_settings_page.dart` 等 · `ai_providers.dart`  
-默认智谱：`open.bigmodel.cn` · `glm-4-flash` / `glm-4v-flash`
+`ai_provider_config.dart` · `ai_provider_store.dart` · `ai_provider_config_package.dart` · `openai_compatible_client.dart` · `prompt_builder.dart` · `ai_category_match.dart` · `extraction_engine.dart` · `ai_bookkeeper.dart` · `bill_creation_service.dart` · `ai_settings_page.dart` 等 · `ai_providers.dart`  
+默认智谱：`open.bigmodel.cn` · `glm-4-flash` / `glm-4v-flash`；内置 Agnes：`apihub.agnes-ai.com/v1` · `agnes-2.5-flash`（文本/视觉；语音默认可空）
 
 ---
 
@@ -333,7 +334,7 @@ ADR-002 / 003 / 013 / 016 / 029 / 036 / 039 / 040 / 051（及明细同步钮 ADR
 
 **截图关联窗（ADR-068；废止独立稳定期 / 2min 总时限 / ±15s 删原补扫）：** 检出即开 **15s 关联窗**（自首次检出）并早期进度（**原生立刻起 FGS**「检测到截图」，Dart 再对齐 `isActive`）；同路径不重置时钟（名称+size 未变则忽略）；门闩读当前磁盘文件。窗内原仍在又来新图 → **短观察 2s**（旧消失=替换，仍在=连拍）。删原且内存无后继 → **删原短等 2s** 等新候选（来了=替换，超时取消并通知「截图已取消，未入账」）。**真替换立刻入账门闩**。废止 DATE_ADDED±15s 当场捞盘补扫与候选 2min 硬切。**非候选过滤**：`IS_TRASHED`、path/name 含 trash、DISPLAY_NAME 含 `@delete` 不入候选（短日志）。门闩前不入已处理集。连拍各路径独立；Vision 仍串行。分享入账、前台选图不走上述窗口。程序日志时长用 **s**。
 
-Android：`ScreenshotObserver`（MediaStore + **监听目录∩关键词** + 关联窗 + 短观察 + 删原短等；ADR-070）。**首次**开开关做目录发现扫描后进入目录页（再次开启保留已存列表，不自动重扫）；空列表不注册 Observer，监听目录行**副标题**红字「不可用，未配置监听目录」。目录详情列表：主标题相对键，副标题**展示用绝对路径**（运行时主存储根 + 相对键，灰字不省略）。**回前台补扫（ADR-074 / 076）：** 开关开时 `paused` 记水位 W；`resumed` 幂等重绑后扫 `DATE_ADDED > max(W, now−24h)`（无 W 回退 5min）并立刻门闩；扫成功后 W=`now`；进度文案「补扫到截图 / 正在补识别…」（非关联窗「等待确认」）。去重靠路径 `processed`，不靠水位。iOS：保持原样（快捷指令引导；无监听目录入口）。
+Android：`ScreenshotObserver`（MediaStore + **监听目录∩关键词** + 关联窗 + 短观察 + 删原短等；ADR-070）。**首次**开开关做目录发现扫描后进入目录页（再次开启保留已存列表，不自动重扫）；空列表不注册 Observer，监听目录行**副标题**红字「不可用，未配置监听目录」。目录详情列表：主标题相对键，副标题**展示用绝对路径**（运行时主存储根 + 相对键，灰字不省略）。**回前台补扫（ADR-074 / 076 / 077）：** `resumed` 幂等重绑后扫 `DATE_ADDED > max(W, now−24h)`（无 W 回退 5min）并立刻门闩；进度文案「补扫到截图 / 正在补识别…」。**水位 W（ADR-077）：** 仅截图自动开始调 Vision 时 `W=max(旧W,now)`；`paused` / 补扫结束 / 分享 / 手动不写。去重：路径 `processed` + 近期原名 FIFO（50；分享拷图记 `DISPLAY_NAME`，查不到或烂名不入队）。iOS：保持原样（快捷指令引导；无监听目录入口）。
 
 ### 关键规则
 
@@ -592,6 +593,9 @@ flutter build apk --release --split-per-abi
 | 071 | 轻提示 PigToast | 白胶囊 Overlay 取代纯文案 SnackBar；需「去设置」改 Dialog；见 `docs/adr/071-*.md` / `docs/glossary.md` |
 | 072 | 后台 Vision 每商一次 | 直存与前台对齐：每已测通商仅 1 次、失败即换商；取消同商 3s；判定与阻塞不变；见 `docs/adr/072-*.md` |
 | 073 | 截图后台假死诊断 | 监听假死≠Observer 永久卸载；阻塞为设计路径；缓解含 resume 重绑+5min 补扫；见 `docs/adr/073-*.md` |
-| 074 | 回前台水位线补扫 | `paused` 记 W；`resumed` 扫 W～now∩24h，无 W 回退 5min；不去重靠水位；见 `docs/adr/074-*.md` |
+| 074 | 回前台水位线补扫 | 扫 W～now∩24h，无 W 回退 5min；**写入策略见 077**；见 `docs/adr/074-*.md` |
 | 075 | 直存分享优先队列 | `share` > `screenshot`；不打断 inflight；等时 FGS 提示；段中途 flush 见 **076**；见 `docs/adr/075-*.md` |
 | 076 | 直存通知 FGS 归属 | holders+相位；取消不误杀；补扫独立文案；整批空再「识别结果」；stop→result；见 `docs/adr/076-*.md` |
+| 077 | 补扫水位与原名 FIFO | W 仅截图 Vision 起点前进；名 FIFO 50 兜底分享/原路径；见 `docs/adr/077-*.md` |
+| 078 | 内置 Agnes AI | 第二内置；按 id 注入；默认不改绑；见 `docs/adr/078-*.md` |
+| 079 | 服务商配置包导入导出 | `.txt` JSON；含 Key+绑定+测通态；合并/覆盖；超限或包不完整整包失败；见 `docs/adr/079-*.md` |

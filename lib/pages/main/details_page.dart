@@ -75,18 +75,50 @@ class _DetailsPageState extends ConsumerState<DetailsPage> {
       }
     }
     final happenedAt = entry?.happenedAt;
-    if (happenedAt != null) {
-      final targetMonth = DateTime(happenedAt.year, happenedAt.month);
+    final targetMonth = happenedAt == null
+        ? null
+        : DateTime(happenedAt.year, happenedAt.month);
+    if (targetMonth != null) {
       final current = ref.read(detailsMonthProvider);
       if (current.year != targetMonth.year ||
           current.month != targetMonth.month) {
         ref.read(detailsMonthProvider.notifier).state = targetMonth;
-        await Future<void>.delayed(const Duration(milliseconds: 50));
       }
     }
 
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      for (var i = 0; i < 12; i++) {
+    // 等目标月数据就绪且行 GlobalKey 已挂上。
+    // 旧实现只等 ~0.5s + ListView.builder 不建屏外行 → 真机常只到月不滚行。
+    final deadline = DateTime.now().add(const Duration(seconds: 3));
+    while (mounted && DateTime.now().isBefore(deadline)) {
+      if (targetMonth != null) {
+        final browse = ref.read(detailsMonthProvider);
+        if (browse.year != targetMonth.year ||
+            browse.month != targetMonth.month) {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+          continue;
+        }
+      }
+
+      final ledger = ref.read(monthLedgerProvider);
+      if (ledger.hasValue) {
+        final days = ledger.requireValue.days;
+        final found = days.any(
+          (d) => d.items.any((i) => i.tx.syncId == syncId),
+        );
+        if (!found) {
+          // 仅在确认已是目标月数据时放弃（避免换月瞬间读到旧月 AsyncData）。
+          if (days.isEmpty) break;
+          final sample = days.first.day;
+          final browse = ref.read(detailsMonthProvider);
+          if (sample.year == browse.year && sample.month == browse.month) {
+            break;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+          continue;
+        }
+
+        await WidgetsBinding.instance.endOfFrame;
+        if (!mounted) return;
         final ctx = _rowKeys[syncId]?.currentContext;
         if (ctx != null && ctx.mounted) {
           await Scrollable.ensureVisible(
@@ -99,12 +131,11 @@ class _DetailsPageState extends ConsumerState<DetailsPage> {
           ref.read(pendingReviewProvider.notifier).consumeJump();
           return;
         }
-        await Future<void>.delayed(const Duration(milliseconds: 40));
-        if (!mounted) return;
       }
-      if (!mounted) return;
-      ref.read(pendingReviewProvider.notifier).consumeJump();
-    });
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    if (!mounted) return;
+    ref.read(pendingReviewProvider.notifier).consumeJump();
   }
 
   @override
@@ -259,7 +290,8 @@ class _GroupedTransactionList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListView.builder(
+    // 月内日分组有上限；eager 构建才能给待核对跳转挂上全部行 GlobalKey。
+    return ListView(
       controller: scrollController,
       padding: const EdgeInsets.fromLTRB(
         PigTokens.spaceLg,
@@ -267,16 +299,15 @@ class _GroupedTransactionList extends StatelessWidget {
         PigTokens.spaceLg,
         88,
       ),
-      itemCount: days.length,
-      itemBuilder: (context, index) {
-        final group = days[index];
-        return _DaySection(
-          group: group,
-          highlightSyncIds: highlightSyncIds,
-          rowKeyFor: rowKeyFor,
-          onOpenRow: onOpenRow,
-        );
-      },
+      children: [
+        for (final group in days)
+          _DaySection(
+            group: group,
+            highlightSyncIds: highlightSyncIds,
+            rowKeyFor: rowKeyFor,
+            onOpenRow: onOpenRow,
+          ),
+      ],
     );
   }
 }

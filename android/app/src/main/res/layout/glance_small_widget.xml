@@ -12,15 +12,9 @@
         android:scaleType="fitCenter"
         android:contentDescription="@string/widget_glance_small_name" />
 
-    <!-- 整卡记支出；今日支出大数字带叠隐私（ADR-061）。 -->
-    <FrameLayout
-        android:id="@+id/widget_click"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
-
     <!--
-      金额热区约居中偏上：顶（标题+上空白）/ 金额 / 底（下空白+本月）。
-      无 PendingIntent 的层不拦截，点到下方仍走 widget_click。
+      热区拆成互不重叠三段：顶 / 金额 / 底。
+      金额点按切隐私，其余区域点按记支出，避免叠层命中在不同桌面实现下失效。
     -->
     <LinearLayout
         android:layout_width="match_parent"
@@ -29,6 +23,7 @@
         android:baselineAligned="false">
 
         <FrameLayout
+            android:id="@+id/click_add_top"
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="35" />
@@ -40,6 +35,7 @@
             android:layout_weight="20" />
 
         <FrameLayout
+            android:id="@+id/click_add_bottom"
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="45" />
