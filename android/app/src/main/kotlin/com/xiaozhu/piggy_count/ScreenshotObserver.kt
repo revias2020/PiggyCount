@@ -11,9 +11,6 @@ import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
  * MediaStore ContentObserver：单关联窗 + 短观察 + 删原短等（ADR-068；取代 045/048/064 中稳定期与 ±15s 补扫）。
@@ -26,6 +23,7 @@ import java.util.Locale
  * - 非候选过滤：回收站 / IS_TRASHED / trash·@delete 编码名不进候选。
  * - 监听目录 ∩ 关键词（ADR-070）：空目录时不应注册本 Observer。
  * - 近期原名 FIFO（ADR-077）：分享入账记下 DISPLAY_NAME，补扫/门闩命中则跳过。
+ * - 回前台补扫（ADR-080）：目录收窄 SQL + 收集后一次回调 Dart；不逐张立刻门闩。
  */
 class ScreenshotObserver(
     private val context: Context,
@@ -97,6 +95,12 @@ class ScreenshotObserver(
         return watchDirectories.isNotEmpty()
     }
 
+    /** 是否已按同一组目录在跑（回前台重绑时避免拆掉关联窗）。 */
+    fun watches(dirs: Collection<String>): Boolean {
+        val want = dirs.mapNotNull { ScreenshotWatchPaths.normalize(it) }.toSet()
+        return want.isNotEmpty() && want == watchDirectories
+    }
+
     fun dispose() {
         for (c in candidates.values) {
             clearTimers(c)
@@ -108,15 +112,44 @@ class ScreenshotObserver(
 
     override fun onChange(selfChange: Boolean, uri: Uri?) {
         super.onChange(selfChange, uri)
+        dispatchChange(uri)
+    }
+
+    override fun onChange(selfChange: Boolean, uri: Uri?, flags: Int) {
+        onChange(selfChange, uri)
+    }
+
+    override fun onChange(selfChange: Boolean, uris: Collection<Uri>, flags: Int) {
+        if (uris.isEmpty()) {
+            dispatchChange(null)
+            return
+        }
+        for (uri in uris) {
+            dispatchChange(uri)
+        }
+    }
+
+    /**
+     * 条目 URI 走精确查询；集合 URI / 无 URI 走近 30s 扫描。
+     * Android 10+ 截图常通知 `external_primary` 集合 URI，对整表 `moveToFirst` 会拿到旧图并静默丢弃。
+     */
+    private fun dispatchChange(uri: Uri?) {
         try {
-            if (uri != null) {
+            Log.i(TAG, "onChange uri=$uri")
+            if (uri != null && isMediaItemUri(uri)) {
                 checkUri(uri, 0)
             } else {
                 scanRecent()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "onChange failed", e)
+            Log.e(TAG, "onChange failed uri=$uri", e)
         }
+    }
+
+    /** `.../images/media/123` 才是单条；`.../images/media` 是集合。 */
+    private fun isMediaItemUri(uri: Uri): Boolean {
+        val last = uri.lastPathSegment ?: return false
+        return last.toLongOrNull() != null
     }
 
     private fun checkUri(uri: Uri, attempt: Int) {
@@ -165,24 +198,26 @@ class ScreenshotObserver(
         }
     }
 
-    private fun scanRecent() {
-        val now = System.currentTimeMillis() / 1000
-        scanRecentInternal(now - MAX_AGE_SECONDS, gateImmediately = false)
-    }
-
     /**
-     * 回前台补扫：捞 [sinceEpochSeconds] 之后的漏检截图并立刻门闩（ADR-074）。
+     * 回前台补扫：捞 [sinceEpochSeconds] 之后的漏检截图，**收集路径后一次返回**（ADR-080）。
+     * 不立刻门闩、不起逐张进度；占坑写入 processed，避免与实时 Observer 双推。
      * [sinceEpochSeconds] 为空则回退近 5 分钟（ADR-073），并与 24h 封顶取更晚下界。
      */
-    fun scanMissedForResume(sinceEpochSeconds: Long? = null) {
+    fun scanMissedForResume(sinceEpochSeconds: Long? = null): List<String> {
         val now = System.currentTimeMillis() / 1000
         val lower = sinceEpochSeconds ?: (now - RESUME_SCAN_FALLBACK_AGE_SECONDS)
         val since = maxOf(lower, now - RESUME_SCAN_CAP_AGE_SECONDS)
-        scanRecentInternal(since, gateImmediately = true)
+        return scanResumeBatch(since)
     }
 
-    /** [sinceExclusive]：只捞 `DATE_ADDED > sinceExclusive` 的图。 */
-    private fun scanRecentInternal(sinceExclusive: Long, gateImmediately: Boolean) {
+    /** 实时 onChange 兜底：近 [MAX_AGE_SECONDS] 秒，走关联窗。 */
+    private fun scanRecent() {
+        val now = System.currentTimeMillis() / 1000
+        scanRecentInternal(now - MAX_AGE_SECONDS)
+    }
+
+    /** [sinceExclusive]：只捞 `DATE_ADDED > sinceExclusive` 的图（实时短窗，不收窄 SQL）。 */
+    private fun scanRecentInternal(sinceExclusive: Long) {
         try {
             val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
@@ -198,7 +233,6 @@ class ScreenshotObserver(
             )
             cursor?.use {
                 val sizeIdx = it.getColumnIndex(MediaStore.Images.Media.SIZE)
-                var offered = 0
                 while (it.moveToNext()) {
                     val pathIdx = it.getColumnIndex(MediaStore.Images.Media.DATA)
                     val nameIdx = it.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
@@ -207,19 +241,7 @@ class ScreenshotObserver(
                     val name = it.getString(nameIdx) ?: ""
                     if (isPending(path, name, readPending(it))) continue
                     val size = if (sizeIdx >= 0) it.getLong(sizeIdx) else fileSize(path)
-                    if (gateImmediately) {
-                        if (offerResumeCandidate(path, name, size, trashed = readTrashed(it))) {
-                            offered++
-                        }
-                    } else {
-                        offerCandidate(path, name, size, trashed = readTrashed(it))
-                    }
-                }
-                if (gateImmediately) {
-                    settleLog(
-                        "回前台补扫完成：${offered} 张立刻入队（跳过关联窗） · " +
-                            "since=${formatSince(sinceExclusive)}",
-                    )
+                    offerCandidate(path, name, size, trashed = readTrashed(it))
                 }
             }
         } catch (e: Exception) {
@@ -228,36 +250,114 @@ class ScreenshotObserver(
     }
 
     /**
-     * 回前台补扫专用：目录∩关键词∩未处理且文件仍在 → 立刻门闩（不走 15s 关联窗）。
-     * @return 是否真正触发入账回调
+     * 回前台补扫：`DATE_ADDED` ∩ 监听目录（SQL）再内存过滤；返回待入队路径（新→旧）。
      */
-    private fun offerResumeCandidate(
+    private fun scanResumeBatch(sinceExclusive: Long): List<String> {
+        val collected = mutableListOf<String>()
+        // 开始/完成摘要由 Dart resumeScan / enqueueResumeScan 统一打；此处不逐张 settle。
+        if (watchDirectories.isEmpty()) {
+            return collected
+        }
+        try {
+            val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+            } else {
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            }
+            val (selection, args) = resumeScanSelection(sinceExclusive)
+            val cursor = context.contentResolver.query(
+                uri,
+                projection(),
+                selection,
+                args,
+                "${MediaStore.Images.Media.DATE_ADDED} DESC"
+            )
+            cursor?.use {
+                val sizeIdx = it.getColumnIndex(MediaStore.Images.Media.SIZE)
+                while (it.moveToNext()) {
+                    val pathIdx = it.getColumnIndex(MediaStore.Images.Media.DATA)
+                    val nameIdx = it.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
+                    if (pathIdx < 0 || nameIdx < 0) continue
+                    val path = it.getString(pathIdx) ?: continue
+                    val name = it.getString(nameIdx) ?: ""
+                    if (isPending(path, name, readPending(it))) continue
+                    val size = if (sizeIdx >= 0) it.getLong(sizeIdx) else fileSize(path)
+                    val hit = collectResumeCandidate(
+                        path,
+                        name,
+                        size,
+                        trashed = readTrashed(it),
+                    )
+                    if (hit != null) collected.add(hit)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "scanResumeBatch failed", e)
+            settleLog("回前台补扫失败 err=${e.message}")
+        }
+        return collected
+    }
+
+    /** `DATE_ADDED > ?` 且路径落在监听目录（RELATIVE_PATH / DATA）。 */
+    private fun resumeScanSelection(sinceExclusive: Long): Pair<String, Array<String>> {
+        val args = mutableListOf(sinceExclusive.toString())
+        val dirClauses = mutableListOf<String>()
+        for (raw in watchDirectories) {
+            val dir = ScreenshotWatchPaths.normalize(raw) ?: continue
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                dirClauses.add(
+                    "(${MediaStore.Images.Media.RELATIVE_PATH} LIKE ? OR " +
+                        "${MediaStore.Images.Media.RELATIVE_PATH} = ? OR " +
+                        "${MediaStore.Images.Media.RELATIVE_PATH} = ?)",
+                )
+                args.add("$dir/%")
+                args.add("$dir/")
+                args.add(dir)
+            }
+            dirClauses.add("${MediaStore.Images.Media.DATA} LIKE ?")
+            args.add("%/$dir/%")
+        }
+        val dirSql = if (dirClauses.isEmpty()) {
+            "0"
+        } else {
+            dirClauses.joinToString(" OR ")
+        }
+        val selection =
+            "${MediaStore.Images.Media.DATE_ADDED} > ? AND ($dirSql)"
+        return selection to args.toTypedArray()
+    }
+
+    /**
+     * 回前台补扫专用：目录∩关键词∩未处理且文件仍在 → 占坑并返回 path（不入账回调）。
+     */
+    private fun collectResumeCandidate(
         path: String,
         name: String,
         size: Long,
         trashed: Boolean = false,
-    ): Boolean {
+    ): String? {
         val keywordHit = ScreenshotWatchPaths.keywordHit(path, name)
-        if (ScreenshotNonCandidate.matches(path, name, trashed)) return false
-        if (!keywordHit) return false
-        if (watchDirectories.isEmpty()) return false
-        if (!ScreenshotWatchPaths.matches(path, watchDirectories)) return false
-        if (processed.contains(path)) return false
-        if (ScreenshotNameFifo.contains(context, name)) return false
-        if (candidates.containsKey(path)) return false
-        if (!fileAlive(path)) return false
+        if (ScreenshotNonCandidate.matches(path, name, trashed)) return null
+        if (!keywordHit) return null
+        if (watchDirectories.isEmpty()) return null
+        if (!ScreenshotWatchPaths.matches(path, watchDirectories)) return null
+        if (processed.contains(path)) return null
+        if (ScreenshotNameFifo.contains(context, name)) return null
+        if (candidates.containsKey(path)) {
+            // 回前台由补扫立刻入队，不把剩余关联窗再等满。
+            dropCandidate(path)
+        }
+        if (!fileAlive(path)) return null
 
-        settleLog("补扫命中：立刻入队 file=$name size=$size")
-        val c = Candidate(
-            path = path,
-            name = name,
-            lastSize = size,
-            firstSeenAt = System.currentTimeMillis(),
-        )
-        candidates[path] = c
-        emitEarlyProgress(c, resume = true)
-        tryAccept(c)
-        return processed.contains(path)
+        processed.add(path)
+        ScreenshotNameFifo.remember(context, name)
+        persist()
+        if (processed.size > MAX_PATHS) {
+            val drop = processed.take(50).toSet()
+            processed.removeAll(drop)
+            persist()
+        }
+        return path
     }
 
     private fun offerCandidate(path: String, name: String, size: Long, trashed: Boolean = false) {
@@ -273,7 +373,10 @@ class ScreenshotObserver(
         }
         if (!keywordHit) return
         if (watchDirectories.isEmpty()) return
-        if (!ScreenshotWatchPaths.matches(path, watchDirectories)) return
+        if (!ScreenshotWatchPaths.matches(path, watchDirectories)) {
+            settleLog("不在监听目录 file=$name")
+            return
+        }
         if (processed.contains(path)) return
         if (ScreenshotNameFifo.contains(context, name)) return
 
@@ -627,13 +730,6 @@ class ScreenshotObserver(
         }
     }
 
-    /** 日志用：`yyyy-MM-dd HH:mm:ss(unix秒)`（本地时区）。 */
-    private fun formatSince(epochSeconds: Long): String {
-        val formatted = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-            .format(Date(epochSeconds * 1000L))
-        return "$formatted($epochSeconds)"
-    }
-
     private fun scheduleRetry(uri: Uri, attempt: Int, reason: String) {
         val next = attempt + 1
         val key = uri.toString()
@@ -660,6 +756,7 @@ class ScreenshotObserver(
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             cols.add(MediaStore.Images.Media.IS_PENDING)
+            cols.add(MediaStore.Images.Media.RELATIVE_PATH)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             cols.add(MediaStore.Images.Media.IS_TRASHED)

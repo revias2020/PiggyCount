@@ -23,16 +23,10 @@ final autoBillingServiceProvider = Provider(
       if (ids.isEmpty) return;
       final repo = ref.read(transactionRepositoryProvider);
       final pending = ref.read(pendingReviewProvider.notifier);
-      final notifications = ref.read(billingNotificationServiceProvider);
-      String? lastSyncId;
       for (final id in ids) {
         final tx = await repo.getById(id);
         if (tx == null) continue;
         await pending.addFromTransaction(tx);
-        lastSyncId = tx.syncId;
-      }
-      if (lastSyncId != null) {
-        notifications.lastSuccessSyncId = lastSyncId;
       }
     },
   ),

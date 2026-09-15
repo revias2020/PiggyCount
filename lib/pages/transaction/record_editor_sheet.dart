@@ -596,6 +596,7 @@ class _RecordEditorSheetState extends ConsumerState<RecordEditorSheet> {
                         categories: cats,
                         parentId: _parentId,
                         categoryId: _categoryId,
+                        autoScrollToSelection: _isEdit,
                         onParent: (id) {
                           setState(() {
                             _parentId = id;
@@ -1187,7 +1188,7 @@ class _TypeToggle extends StatelessWidget {
   }
 }
 
-class _CategoryPicker extends StatelessWidget {
+class _CategoryPicker extends StatefulWidget {
   const _CategoryPicker({
     required this.categories,
     required this.parentId,
@@ -1195,6 +1196,7 @@ class _CategoryPicker extends StatelessWidget {
     required this.onParent,
     required this.onChild,
     required this.onAdd,
+    this.autoScrollToSelection = false,
   });
 
   final List<Category> categories;
@@ -1204,17 +1206,96 @@ class _CategoryPicker extends StatelessWidget {
   final ValueChanged<int> onChild;
   final VoidCallback onAdd;
 
+  /// 编辑态打开时滚到当前父分类；新建不滚。
+  final bool autoScrollToSelection;
+
+  @override
+  State<_CategoryPicker> createState() => _CategoryPickerState();
+}
+
+class _CategoryPickerState extends State<_CategoryPicker> {
   /// 均分列宽时的参考芯片宽，用于估算列数。
   static const _refChipW = 68.0;
   static const _spacing = PigTokens.spaceSm;
 
+  final _selectedParentKey = GlobalKey();
+  bool _didAutoScroll = false;
+  int _autoScrollAttempts = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleAutoScrollIfNeeded();
+  }
+
+  @override
+  void didUpdateWidget(covariant _CategoryPicker oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _scheduleAutoScrollIfNeeded();
+  }
+
+  void _scheduleAutoScrollIfNeeded() {
+    if (!widget.autoScrollToSelection || _didAutoScroll) return;
+    final id = widget.parentId;
+    if (id == null) return;
+    final exists = widget.categories.any((c) => c.parentId == null && c.id == id);
+    if (!exists) {
+      _didAutoScroll = true;
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) => _tryAutoScroll(id));
+  }
+
+  Future<void> _tryAutoScroll(int parentId) async {
+    if (!mounted || _didAutoScroll) return;
+    if (widget.parentId != parentId) return;
+
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted || _didAutoScroll) return;
+
+    final ctx = _selectedParentKey.currentContext;
+    if (ctx == null || !ctx.mounted) {
+      _retryAutoScroll(parentId);
+      return;
+    }
+    final box = ctx.findRenderObject();
+    if (box is! RenderBox || !box.hasSize || box.size.height <= 0) {
+      _retryAutoScroll(parentId);
+      return;
+    }
+
+    _didAutoScroll = true;
+    await Scrollable.ensureVisible(
+      ctx,
+      alignment: 0.2,
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  void _retryAutoScroll(int parentId) {
+    if (!mounted || _didAutoScroll) return;
+    _autoScrollAttempts++;
+    if (_autoScrollAttempts >= 8) {
+      _didAutoScroll = true;
+      return;
+    }
+    Future<void>.delayed(const Duration(milliseconds: 50), () {
+      if (!mounted || _didAutoScroll) return;
+      _tryAutoScroll(parentId);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
-    final parents =
-        categories.where((c) => c.parentId == null).toList(growable: false);
+    final parents = widget.categories
+        .where((c) => c.parentId == null)
+        .toList(growable: false);
+    final parentId = widget.parentId;
+    final categoryId = widget.categoryId;
     final children = parentId == null
         ? const <Category>[]
-        : categories
+        : widget.categories
             .where((c) => c.parentId == parentId)
             .toList(growable: false);
 
@@ -1238,13 +1319,16 @@ class _CategoryPicker extends StatelessWidget {
                 for (var j = 0; j < rowItems.length; j++) ...[
                   if (j > 0) const SizedBox(width: _spacing),
                   SizedBox(
+                    key: parentId == rowItems[j].id
+                        ? _selectedParentKey
+                        : null,
                     width: chipW,
                     child: _CatChip(
                       label: rowItems[j].name,
                       category: rowItems[j],
                       selected: parentId == rowItems[j].id ||
                           categoryId == rowItems[j].id,
-                      onTap: () => onParent(rowItems[j].id),
+                      onTap: () => widget.onParent(rowItems[j].id),
                     ),
                   ),
                 ],
@@ -1282,7 +1366,7 @@ class _CategoryPicker extends StatelessWidget {
                           category: c,
                           selected: categoryId == c.id,
                           compact: true,
-                          onTap: () => onChild(c.id),
+                          onTap: () => widget.onChild(c.id),
                         ),
                       _CatChip(
                         label: '添加',
@@ -1290,7 +1374,7 @@ class _CategoryPicker extends StatelessWidget {
                         iconColor: PigTokens.textTertiary,
                         selected: false,
                         compact: true,
-                        onTap: onAdd,
+                        onTap: widget.onAdd,
                       ),
                     ],
                   ),

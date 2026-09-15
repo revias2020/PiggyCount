@@ -183,19 +183,14 @@ class _PiggyAppState extends ConsumerState<PiggyApp>
     }
   }
 
+  /// 识别结果通知：只进明细；滚到某笔仅由信封未读点击负责（避免与 requestJump 抢通道）。
   void _onBillingNotificationAction(BillingNotificationAction action) {
     ref.read(tabIndexProvider.notifier).state = 0;
     final nav = rootNavigatorKey.currentState;
     nav?.popUntil((r) => r.isFirst);
 
-    if (action == BillingNotificationAction.success) {
-      final syncId =
-          ref.read(billingNotificationServiceProvider).lastSuccessSyncId;
-      if (syncId != null && syncId.isNotEmpty) {
-        ref.read(pendingReviewProvider.notifier).requestJump(syncId);
-      }
-      return;
-    }
+    // 成功：仅唤起明细，不 requestJump。
+    if (action == BillingNotificationAction.success) return;
 
     if (action != BillingNotificationAction.failure) return;
 

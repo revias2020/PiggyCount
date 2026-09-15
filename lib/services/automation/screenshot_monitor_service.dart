@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:flutter/services.dart';
-import 'package:intl/intl.dart';
 
 import '../../utils/app_permissions.dart';
 import '../../utils/screenshot_watch_path.dart';
@@ -9,7 +8,7 @@ import '../system/logger_service.dart';
 import 'auto_billing_service.dart';
 import 'screenshot_resume_watermark.dart';
 
-/// Android 截图监听 Dart 端适配（ADR-068 / ADR-070 / ADR-074 / ADR-077）。
+/// Android 截图监听 Dart 端适配（ADR-068 / ADR-070 / ADR-074 / ADR-077 / ADR-080）。
 class ScreenshotMonitorService {
   ScreenshotMonitorService(this._autoBilling);
 
@@ -22,17 +21,8 @@ class ScreenshotMonitorService {
   /// 水位补扫时间封顶（ADR-074 / 077）。
   static const resumeCapAgeSeconds = ScreenshotResumeWatermark.capAgeSeconds;
 
-  static final _sinceFmt = DateFormat('yyyy-MM-dd HH:mm:ss');
-
   final AutoBillingService _autoBilling;
   bool _listening = false;
-
-  /// 日志用：`yyyy-MM-dd HH:mm:ss(unix秒)`（本地时区）。
-  static String formatSince(int epochSeconds) {
-    final local =
-        DateTime.fromMillisecondsSinceEpoch(epochSeconds * 1000, isUtc: false);
-    return '${_sinceFmt.format(local)}($epochSeconds)';
-  }
 
   bool get isListening => _listening;
 
@@ -117,9 +107,10 @@ class ScreenshotMonitorService {
     return start(directories: directories);
   }
 
-  /// 回前台水位线补扫（立刻门闩；ADR-074 / 077）。须已 [start]。
+  /// 回前台水位线补扫（ADR-074 / 077 / 080）。须已 [start]。
   ///
-  /// 扫 `DATE_ADDED > max(W, now−24h)`；无 W 时回退近 5 分钟。
+  /// 原生扫完返回路径；Dart 入补扫队并发 1002（N=0 静默）。
+  /// 日志只打开始（含 since）与完成入队张数，不打逐张中间过程。
   /// 不在此处推进 W（仅截图自动开始 Vision 时前进，见 [ScreenshotResumeWatermark]）。
   Future<bool> resumeScan() async {
     if (!Platform.isAndroid) return false;
@@ -130,25 +121,29 @@ class ScreenshotMonitorService {
       now: now,
       watermark: w,
     );
+    logger.info('Screenshot', '回前台补扫开始 since=${_formatSince(sinceExclusive)}');
     try {
-      final ok = await _channel.invokeMethod<bool>(
+      final raw = await _channel.invokeMethod<List<dynamic>>(
         'resumeScreenshotScan',
         {'sinceEpochSeconds': sinceExclusive},
       );
-      if (ok == true) {
-        final windowDesc = w != null
-            ? '自上次截图 AI 水位起查漏检（最多24小时）'
-            : '无水位，回退近5分钟（最多24小时）';
-        logger.info(
-          'Screenshot',
-          '回前台补扫：$windowDesc · since=${formatSince(sinceExclusive)}',
-        );
-      }
-      return ok == true;
+      final paths = _stringList(raw);
+      await _autoBilling.enqueueResumeScan(paths);
+      return true;
     } catch (e) {
       logger.warning('Screenshot', '回前台补扫失败 err=$e');
       return false;
     }
+  }
+
+  /// 日志用：`yyyy-MM-dd HH:mm:ss(unix秒)`（本地时区）。
+  static String _formatSince(int epochSeconds) {
+    final dt = DateTime.fromMillisecondsSinceEpoch(epochSeconds * 1000);
+    String two(int n) => n.toString().padLeft(2, '0');
+    final formatted =
+        '${dt.year}-${two(dt.month)}-${two(dt.day)} '
+        '${two(dt.hour)}:${two(dt.minute)}:${two(dt.second)}';
+    return '$formatted($epochSeconds)';
   }
 
   /// 热更新目录；空列表则停止监听。
@@ -192,18 +187,15 @@ class ScreenshotMonitorService {
         case 'onScreenshotProgress':
           final args = call.arguments;
           String? path;
-          var resume = false;
           if (args is String) {
             path = args;
           } else if (args is Map) {
             path = args['path'] as String?;
-            resume = args['resume'] == true;
+            // resume==true 为旧补扫路径；ADR-080 起补扫走 resumeScan 返回列表。
+            if (args['resume'] == true) return;
           }
           if (path == null || path.isEmpty) return;
-          await _autoBilling.showScreenshotEarlyProgress(
-            path,
-            resume: resume,
-          );
+          await _autoBilling.showScreenshotEarlyProgress(path);
           return;
         case 'onScreenshotSuperseded':
           final args = call.arguments;

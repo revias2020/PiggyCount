@@ -1,27 +1,13 @@
-/// ADR-063：分享已收到进度最短展示（回源后起算），避免栏里只看见「正在识别」。
+/// 分享入账：前台网络预热与回源沉降。
+///
+/// 历史上「先回源再 hold ≥1s 才 Vision」易在后台新建大 POST 时被系统
+/// `Software caused connection abort`；现改为前台先开 Vision，短预热后再回源。
 class ShareEarlyProgressGate {
   ShareEarlyProgressGate._();
 
-  /// 自回源且通知可被看到起，至少保留多久再允许切到后续进度。
-  static const minDisplay = Duration(seconds: 1);
+  /// 入队 Vision 后、回源前保留的前台窗口，便于读图/压缩并开始 POST。
+  static const foregroundNetworkWarmup = Duration(milliseconds: 1500);
 
   /// [moveTaskToBack] 返回后到 Activity `visibility=false` 的沉降（热启实测约 300ms）。
   static const backgroundSettle = Duration(milliseconds: 300);
-
-  static DateTime? _shownAt;
-
-  /// 在回源并 [backgroundSettle] 之后调用。
-  static void markShown() {
-    _shownAt = DateTime.now();
-  }
-
-  static Future<void> awaitMinDisplay() async {
-    final at = _shownAt;
-    if (at == null) return;
-    final elapsed = DateTime.now().difference(at);
-    final remaining = minDisplay - elapsed;
-    if (remaining > Duration.zero) {
-      await Future<void>.delayed(remaining);
-    }
-  }
 }

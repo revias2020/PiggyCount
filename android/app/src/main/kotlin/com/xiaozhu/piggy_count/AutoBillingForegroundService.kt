@@ -141,10 +141,10 @@ class AutoBillingForegroundService : Service() {
             if (nm.getNotificationChannel(CHANNEL_ID) != null) return
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "智能记账进度",
+                "智能记账",
                 NotificationManager.IMPORTANCE_DEFAULT,
             ).apply {
-                description = "截图/分享识别进行中"
+                description = "截图/分享识别进度与结果"
                 setShowBadge(false)
             }
             nm.createNotificationChannel(channel)
@@ -175,7 +175,7 @@ class AutoBillingForegroundService : Service() {
                 .setContentText(body)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setOngoing(true)
-                // 每次 startForeground 都会刷新同 id 通知；横幅是否再弹取决于系统与渠道
+                // 每次 startForeground 都会刷新同 id 通知；渠道为 DEFAULT，只进通知栏
                 .setOnlyAlertOnce(false)
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .build()

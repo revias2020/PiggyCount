@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -88,14 +89,14 @@ class MainActivity : FlutterFragmentActivity() {
                     "resumeScreenshotScan" -> {
                         val obs = screenshotObserver
                         if (obs == null) {
-                            result.success(false)
+                            result.success(emptyList<String>())
                         } else {
                             @Suppress("UNCHECKED_CAST")
                             val args = call.arguments as? Map<*, *>
                             val since = (args?.get("sinceEpochSeconds") as? Number)
                                 ?.toLong()
-                            obs.scanMissedForResume(sinceEpochSeconds = since)
-                            result.success(true)
+                            // ADR-080：扫完返回路径列表，由 Dart 入补扫队。
+                            result.success(obs.scanMissedForResume(sinceEpochSeconds = since))
                         }
                     }
                     "setWatchDirectories" -> {
@@ -308,8 +309,15 @@ class MainActivity : FlutterFragmentActivity() {
         engine: FlutterEngine,
         watchDirectories: Collection<String>,
     ) {
+        if (watchDirectories.isEmpty()) {
+            stopScreenshotObserver()
+            return
+        }
+        val existing = screenshotObserver
+        if (existing != null && existing.watches(watchDirectories)) {
+            return
+        }
         stopScreenshotObserver()
-        if (watchDirectories.isEmpty()) return
         val channel = MethodChannel(engine.dartExecutor.binaryMessenger, SCREENSHOT_CHANNEL)
         screenshotObserver = ScreenshotObserver(
             this,
@@ -318,24 +326,18 @@ class MainActivity : FlutterFragmentActivity() {
             },
             onScreenshotProgress = { path, resume ->
                 // 与关联窗检出日志同拍：原生先贴 FGS，避免仅靠 Dart 通知在后台迟到。
-                // 补扫立刻门闩，用独立文案（ADR-076），禁止「等待确认」。
-                if (resume) {
-                    AutoBillingForegroundService.start(
-                        this,
-                        "补扫到截图",
-                        "正在补识别…",
-                    )
-                } else {
+                // ADR-080：补扫不再走 resume 早期进度（改 Dart 1002）。
+                if (!resume) {
                     AutoBillingForegroundService.start(
                         this,
                         "检测到截图",
                         "等待确认后识别…",
                     )
+                    channel.invokeMethod(
+                        "onScreenshotProgress",
+                        mapOf("path" to path, "resume" to false),
+                    )
                 }
-                channel.invokeMethod(
-                    "onScreenshotProgress",
-                    mapOf("path" to path, "resume" to resume),
-                )
             },
             onScreenshotSuperseded = { oldPath, newPath ->
                 channel.invokeMethod(
@@ -351,12 +353,24 @@ class MainActivity : FlutterFragmentActivity() {
             },
             initialWatchDirectories = watchDirectories,
         )
-        val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
-        } else {
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        val observer = screenshotObserver!!
+        for (uri in screenshotObserverUris()) {
+            contentResolver.registerContentObserver(uri, true, observer)
         }
-        contentResolver.registerContentObserver(uri, true, screenshotObserver!!)
+    }
+
+    /**
+     * Android 10+ 截图写入通知在 `external_primary`，只订 `external` 会收不到 onChange，
+     * 但查询 fused volume 仍能补扫到文件。
+     */
+    private fun screenshotObserverUris(): List<Uri> {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            return listOf(
+                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL),
+                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+            ).distinct()
+        }
+        return listOf(MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
     }
 
     private fun stopScreenshotObserver() {

@@ -11,20 +11,24 @@ class PendingReviewState {
     this.entries = const [],
     this.highlightSyncIds = const {},
     this.jumpToSyncId,
+    this.jumpSeq = 0,
     this.loaded = false,
   });
 
   final List<PendingReviewEntry> entries;
   /// 本次前台高亮；进后台清空。
   final Set<String> highlightSyncIds;
-  /// 通知/信封请求滚到的 syncId；明细消费后清空。
+  /// 信封未读点击请求滚到的 syncId；明细消费后清空。
   final String? jumpToSyncId;
+  /// 每次 [PendingReviewNotifier.requestJump] 递增；同 syncId 也能再次触发滚动。
+  final int jumpSeq;
   final bool loaded;
 
   PendingReviewState copyWith({
     List<PendingReviewEntry>? entries,
     Set<String>? highlightSyncIds,
     String? jumpToSyncId,
+    int? jumpSeq,
     bool clearJump = false,
     bool? loaded,
   }) {
@@ -32,6 +36,7 @@ class PendingReviewState {
       entries: entries ?? this.entries,
       highlightSyncIds: highlightSyncIds ?? this.highlightSyncIds,
       jumpToSyncId: clearJump ? null : (jumpToSyncId ?? this.jumpToSyncId),
+      jumpSeq: jumpSeq ?? this.jumpSeq,
       loaded: loaded ?? this.loaded,
     );
   }
@@ -139,18 +144,17 @@ class PendingReviewNotifier extends StateNotifier<PendingReviewState> {
   }
 
   void requestJump(String syncId) {
-    state = state.copyWith(jumpToSyncId: syncId);
+    // 即使 syncId 相同也递增 jumpSeq，否则同笔再点一次不会触发滚动。
+    state = state.copyWith(
+      jumpToSyncId: syncId,
+      jumpSeq: state.jumpSeq + 1,
+    );
   }
 
-  /// 通知成功：跳到该账本最近一笔待核对（刚入账的通常在集合末尾/按时间最新）。
-  void requestJumpLatestForLedger(int ledgerId) {
-    final list = state.forLedger(ledgerId);
-    if (list.isEmpty) return;
-    requestJump(list.first.syncId);
-  }
-
-  void consumeJump() {
+  /// [seq] 非空时仅消费对应一代跳转，避免旧跳转超时清掉新的 requestJump。
+  void consumeJump({int? seq}) {
     if (state.jumpToSyncId == null) return;
+    if (seq != null && state.jumpSeq != seq) return;
     state = state.copyWith(clearJump: true);
   }
 

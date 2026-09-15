@@ -65,7 +65,12 @@ class _DetailsPageState extends ConsumerState<DetailsPage> {
     _setBrowseMonth(next, scrollToTop: true);
   }
 
-  Future<void> _handleJump(String syncId) async {
+  Future<void> _handleJump(String syncId, int seq) async {
+    bool stillCurrent() {
+      final s = ref.read(pendingReviewProvider);
+      return mounted && s.jumpSeq == seq && s.jumpToSyncId == syncId;
+    }
+
     final entries = ref.read(pendingReviewProvider).entries;
     PendingReviewEntry? entry;
     for (final e in entries) {
@@ -88,8 +93,9 @@ class _DetailsPageState extends ConsumerState<DetailsPage> {
 
     // 等目标月数据就绪且行 GlobalKey 已挂上。
     // 旧实现只等 ~0.5s + ListView.builder 不建屏外行 → 真机常只到月不滚行。
+    // 关信封后布局未稳时也可能拿不到有效 RenderBox，需多等几帧。
     final deadline = DateTime.now().add(const Duration(seconds: 3));
-    while (mounted && DateTime.now().isBefore(deadline)) {
+    while (stillCurrent() && DateTime.now().isBefore(deadline)) {
       if (targetMonth != null) {
         final browse = ref.read(detailsMonthProvider);
         if (browse.year != targetMonth.year ||
@@ -118,24 +124,35 @@ class _DetailsPageState extends ConsumerState<DetailsPage> {
         }
 
         await WidgetsBinding.instance.endOfFrame;
-        if (!mounted) return;
+        if (!stillCurrent()) return;
         final ctx = _rowKeys[syncId]?.currentContext;
         if (ctx != null && ctx.mounted) {
-          await Scrollable.ensureVisible(
-            ctx,
-            duration: const Duration(milliseconds: 320),
-            curve: Curves.easeOutCubic,
-            alignment: 0.2,
-          );
-          if (!mounted) return;
-          ref.read(pendingReviewProvider.notifier).consumeJump();
+          final box = ctx.findRenderObject();
+          if (box is! RenderBox || !box.hasSize || box.size.height <= 0) {
+            await Future<void>.delayed(const Duration(milliseconds: 50));
+            continue;
+          }
+          try {
+            await Scrollable.ensureVisible(
+              ctx,
+              duration: const Duration(milliseconds: 320),
+              curve: Curves.easeOutCubic,
+              alignment: 0.2,
+            );
+          } catch (_) {
+            // 路由/换月导致 context 失效时重试，勿直接 consume。
+            await Future<void>.delayed(const Duration(milliseconds: 50));
+            continue;
+          }
+          if (!stillCurrent()) return;
+          ref.read(pendingReviewProvider.notifier).consumeJump(seq: seq);
           return;
         }
       }
       await Future<void>.delayed(const Duration(milliseconds: 50));
     }
-    if (!mounted) return;
-    ref.read(pendingReviewProvider.notifier).consumeJump();
+    if (!stillCurrent()) return;
+    ref.read(pendingReviewProvider.notifier).consumeJump(seq: seq);
   }
 
   @override
@@ -144,11 +161,13 @@ class _DetailsPageState extends ConsumerState<DetailsPage> {
     final asyncLedger = ref.watch(monthLedgerProvider);
     final pending = ref.watch(pendingReviewProvider);
 
-    ref.listen<String?>(
-      pendingReviewProvider.select((s) => s.jumpToSyncId),
+    ref.listen<int>(
+      pendingReviewProvider.select((s) => s.jumpSeq),
       (prev, next) {
-        if (next != null && next != prev) {
-          _handleJump(next);
+        if (next <= 0 || next == prev) return;
+        final id = ref.read(pendingReviewProvider).jumpToSyncId;
+        if (id != null) {
+          _handleJump(id, next);
         }
       },
     );
@@ -291,8 +310,10 @@ class _GroupedTransactionList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // 月内日分组有上限；eager 构建才能给待核对跳转挂上全部行 GlobalKey。
+    // cacheExtent 拉满：屏外行也不卸布局，避免滚远后顶行 key 失效导致未读聚焦空转。
     return ListView(
       controller: scrollController,
+      cacheExtent: double.infinity,
       padding: const EdgeInsets.fromLTRB(
         PigTokens.spaceLg,
         PigTokens.spaceXs,

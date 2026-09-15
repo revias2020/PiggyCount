@@ -208,10 +208,10 @@ class _SpeechRecognitionSectionState
             title: Text('下载 ${spec.displayName}'),
             content: ValueListenableBuilder<double>(
               valueListenable: progressNotifier,
-              builder: (_, value, __) {
+              builder: (_, value, _) {
                 return ValueListenableBuilder<String>(
                   valueListenable: statusNotifier,
-                  builder: (_, status, __) {
+                  builder: (_, status, _) {
                     return Column(
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.stretch,

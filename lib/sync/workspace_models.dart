@@ -1,4 +1,5 @@
 /// 同步工作区快照与预览（纯数据，不含 Drift）。ADR-042。
+library;
 
 class SyncPreviewCounts {
   const SyncPreviewCounts({

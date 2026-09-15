@@ -146,10 +146,14 @@ class _PendingReviewSheetBodyState
                         ),
                       ),
                       onTap: () {
+                        final syncId = row.syncId;
+                        final pending =
+                            ref.read(pendingReviewProvider.notifier);
                         Navigator.of(context).pop();
-                        ref
-                            .read(pendingReviewProvider.notifier)
-                            .requestJump(row.syncId);
+                        // 等信封关闭后再跳，避免与 modal 退场抢布局；且 notifier 已取出，不依赖已 dispose 的 sheet ref。
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          pending.requestJump(syncId);
+                        });
                       },
                     );
                   },

@@ -393,7 +393,7 @@ class _MainCategorySectionState extends State<_MainCategorySection> {
   }
 
   Future<void> _addMain() async {
-    final result = await showCategoryEditSheet(
+    final result = await _showCategoryEditSheet(
       context,
       title: '添加分类',
       kind: widget.kind,
@@ -518,7 +518,7 @@ class _MainCategoryDetailSheetState extends State<_MainCategoryDetailSheet> {
   }
 
   Future<void> _editMain() async {
-    final result = await showCategoryEditSheet(
+    final result = await _showCategoryEditSheet(
       context,
       title: '编辑分类',
       kind: widget.kind,
@@ -587,7 +587,7 @@ class _MainCategoryDetailSheetState extends State<_MainCategoryDetailSheet> {
   }
 
   Future<void> _addChild() async {
-    final result = await showCategoryEditSheet(
+    final result = await _showCategoryEditSheet(
       context,
       title: '添加子分类',
       kind: widget.kind,
@@ -633,7 +633,7 @@ class _MainCategoryDetailSheetState extends State<_MainCategoryDetailSheet> {
     if (action == null || !mounted) return;
     switch (action) {
       case 'edit':
-        final result = await showCategoryEditSheet(
+        final result = await _showCategoryEditSheet(
           context,
           title: '编辑子分类',
           kind: widget.kind,
@@ -1004,7 +1004,7 @@ Future<void> _finalizeCustomIcon({
   }
 }
 
-Future<_EditResult?> showCategoryEditSheet(
+Future<_EditResult?> _showCategoryEditSheet(
   BuildContext context, {
   required String title,
   required String kind,

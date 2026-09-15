@@ -12,7 +12,7 @@ enum BillingFgsOwner {
   /// 分享入站 / 插队等待 / 分享识别。
   share,
 
-  /// 门闩后 Vision 批次（含补扫）。
+  /// 门闩后 Vision 批次（实时截图自动；补扫亦 acquire 保活，文案见 1002 / ADR-080）。
   batch,
 
   /// 阻塞队列回前台重试。

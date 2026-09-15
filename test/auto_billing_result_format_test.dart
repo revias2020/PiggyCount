@@ -72,6 +72,10 @@ void main() {
     test('固定识别结果', () {
       expect(formatAutoBillingResultTitle(), '识别结果');
     });
+
+    test('补扫结果标题', () {
+      expect(formatResumeBillingResultTitle(), '补扫结果');
+    });
   });
 
   group('autoBillingResultClickSuccess', () {
