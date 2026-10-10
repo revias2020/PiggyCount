@@ -9,7 +9,7 @@ import '../../widgets/page_status.dart';
 import '../../widgets/transaction/transaction_row_tile.dart';
 import 'category_detail_page.dart';
 
-/// 标签明细：月度可换月（ADR-029）；报表入口带只读周期（ADR-033）。
+/// 标签明细：月度可换月（ADR-029）；报表入口可切周期，与上一层独立。
 /// [tagId] 为 null 表示未标注（ADR-039）。
 class TagDetailPage extends ConsumerStatefulWidget {
   const TagDetailPage({
@@ -17,31 +17,34 @@ class TagDetailPage extends ConsumerStatefulWidget {
     this.tagId,
     required this.tagName,
     this.initialMonth,
-    this.lockedPeriod,
+    this.initialPeriod,
   }) : assert(
-          initialMonth != null || lockedPeriod != null,
-          'initialMonth or lockedPeriod required',
+          initialMonth != null || initialPeriod != null,
+          'initialMonth or initialPeriod required',
         );
 
   /// `null` 表示未标注。
   final int? tagId;
   final String tagName;
   final DateTime? initialMonth;
-  final ReportPeriod? lockedPeriod;
+
+  /// 报表构成下钻初值；页内可切换，不回写报表。
+  final ReportPeriod? initialPeriod;
 
   @override
   ConsumerState<TagDetailPage> createState() => _TagDetailPageState();
 }
 
 class _TagDetailPageState extends ConsumerState<TagDetailPage> {
-  late DateTime _month;
+  DateTime? _month;
+  ReportPeriod? _period;
 
   @override
   void initState() {
     super.initState();
-    final locked = widget.lockedPeriod;
-    if (locked != null) {
-      _month = DateTime(locked.anchor.year, locked.anchor.month);
+    final initial = widget.initialPeriod;
+    if (initial != null) {
+      _period = initial;
     } else {
       final m = widget.initialMonth!;
       _month = DateTime(m.year, m.month);
@@ -49,22 +52,22 @@ class _TagDetailPageState extends ConsumerState<TagDetailPage> {
   }
 
   TagDetailQuery get _query {
-    final locked = widget.lockedPeriod;
-    if (locked != null) {
+    final period = _period;
+    if (period != null) {
       return TagDetailQuery(
-        start: locked.start,
-        end: locked.end,
+        start: period.start,
+        end: period.end,
         tagId: widget.tagId,
       );
     }
-    return TagDetailQuery.month(month: _month, tagId: widget.tagId);
+    return TagDetailQuery.month(month: _month!, tagId: widget.tagId);
   }
 
   @override
   Widget build(BuildContext context) {
     final query = _query;
     final async = ref.watch(tagDetailTransactionsProvider(query));
-    final locked = widget.lockedPeriod;
+    final period = _period;
 
     return Scaffold(
       backgroundColor: PigTokens.scaffoldBackground,
@@ -88,16 +91,17 @@ class _TagDetailPageState extends ConsumerState<TagDetailPage> {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (locked != null)
-                DetailPeriodReadonlyBar(
-                  label: formatReportPeriodTitle(locked),
+              if (period != null)
+                DetailPeriodNavBar(
+                  period: period,
                   count: items.length,
                   expense: expense,
                   income: income,
+                  onPeriodChanged: (p) => setState(() => _period = p),
                 )
               else
                 DetailMonthNavBar(
-                  month: _month,
+                  month: _month!,
                   count: items.length,
                   expense: expense,
                   income: income,
@@ -107,7 +111,7 @@ class _TagDetailPageState extends ConsumerState<TagDetailPage> {
               Expanded(
                 child: items.isEmpty
                     ? EmptyState(
-                        message: locked != null ? '本期暂无账单' : '本月暂无账单',
+                        message: period != null ? '本期暂无账单' : '本月暂无账单',
                       )
                     : ListView.separated(
                         padding: const EdgeInsets.symmetric(
@@ -121,7 +125,11 @@ class _TagDetailPageState extends ConsumerState<TagDetailPage> {
                         itemBuilder: (context, i) {
                           return Material(
                             color: PigTokens.surface,
-                            child: TransactionRowTile(item: items[i]),
+                            child: TransactionRowTile(
+                              item: items[i],
+                              showMonthDay: true,
+                              enableLongPressDelete: true,
+                            ),
                           );
                         },
                       ),

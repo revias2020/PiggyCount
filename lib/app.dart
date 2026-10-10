@@ -77,6 +77,15 @@ class _PiggyAppState extends ConsumerState<PiggyApp>
   /// 回前台：阻塞重试 + 截图监听重绑/水位线补扫（ADR-054 / 073 / 074 / 077）。
   Future<void> _onAppResumed() async {
     unawaited(ref.read(autoBillingServiceProvider).retryPendingOnResume());
+    await _restoreScreenshotMonitor(alsoResumeScan: true);
+  }
+
+  /// 开关开启时重绑截图监听；[alsoResumeScan] 为 true 时再跑水位线补扫。
+  ///
+  /// 冷启动与回前台共用：冷启时 App 往往已是 resumed，不会再回调一次。
+  Future<void> _restoreScreenshotMonitor({
+    required bool alsoResumeScan,
+  }) async {
     if (!Platform.isAndroid) return;
     try {
       final enabled =
@@ -88,9 +97,11 @@ class _PiggyAppState extends ConsumerState<PiggyApp>
       if (dirs.isEmpty) return;
       final monitor = ref.read(screenshotMonitorServiceProvider);
       await monitor.ensureRunning(directories: dirs);
-      await monitor.resumeScan();
+      if (alsoResumeScan) {
+        await monitor.resumeScan();
+      }
     } catch (e) {
-      debugPrint('回前台恢复截图监听失败: $e');
+      debugPrint('恢复截图监听失败: $e');
     }
   }
 
@@ -118,22 +129,7 @@ class _PiggyAppState extends ConsumerState<PiggyApp>
       );
       await _shareHandler.bind();
       unawaited(ref.read(autoBillingServiceProvider).retryPendingOnResume());
-      final enabled =
-          await ref.read(settingsRepositoryProvider).screenshotAutoBilling();
-      if (enabled) {
-        try {
-          final dirs = await ref
-              .read(settingsRepositoryProvider)
-              .screenshotWatchDirectories();
-          if (dirs.isNotEmpty) {
-            await ref
-                .read(screenshotMonitorServiceProvider)
-                .start(directories: dirs);
-          }
-        } catch (e) {
-          debugPrint('恢复截图监听失败: $e');
-        }
-      }
+      await _restoreScreenshotMonitor(alsoResumeScan: true);
 
       _appLinkListener = PiggyAppLinkListener(onAction: _onDeepLink);
       await _appLinkListener!.start();

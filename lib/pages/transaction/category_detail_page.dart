@@ -9,20 +9,21 @@ import '../../utils/report_period.dart';
 import '../../widgets/details/year_month_grid_sheet.dart';
 import '../../widgets/empty_state.dart';
 import '../../widgets/page_status.dart';
+import '../../widgets/report/report_period_pickers.dart';
 import '../../widgets/transaction/transaction_row_tile.dart';
 
-/// 分类明细：月度可换月（ADR-029）；报表入口带只读周期（ADR-033）。
+/// 分类明细：月度可换月（ADR-029）；报表入口可切周期，与上一层独立。
 class CategoryDetailPage extends ConsumerStatefulWidget {
   const CategoryDetailPage({
     super.key,
     required this.categoryId,
     required this.categoryName,
     this.initialMonth,
-    this.lockedPeriod,
+    this.initialPeriod,
     this.includeChildren = false,
   }) : assert(
-          initialMonth != null || lockedPeriod != null,
-          'initialMonth or lockedPeriod required',
+          initialMonth != null || initialPeriod != null,
+          'initialMonth or initialPeriod required',
         );
 
   /// `null` 表示未分类。
@@ -30,8 +31,8 @@ class CategoryDetailPage extends ConsumerStatefulWidget {
   final String categoryName;
   final DateTime? initialMonth;
 
-  /// 非空时顶栏区间只读，列表按该周期过滤。
-  final ReportPeriod? lockedPeriod;
+  /// 报表构成下钻初值；页内可切换，不回写报表。
+  final ReportPeriod? initialPeriod;
   final bool includeChildren;
 
   @override
@@ -39,14 +40,15 @@ class CategoryDetailPage extends ConsumerStatefulWidget {
 }
 
 class _CategoryDetailPageState extends ConsumerState<CategoryDetailPage> {
-  late DateTime _month;
+  DateTime? _month;
+  ReportPeriod? _period;
 
   @override
   void initState() {
     super.initState();
-    final locked = widget.lockedPeriod;
-    if (locked != null) {
-      _month = DateTime(locked.anchor.year, locked.anchor.month);
+    final initial = widget.initialPeriod;
+    if (initial != null) {
+      _period = initial;
     } else {
       final m = widget.initialMonth!;
       _month = DateTime(m.year, m.month);
@@ -54,17 +56,17 @@ class _CategoryDetailPageState extends ConsumerState<CategoryDetailPage> {
   }
 
   CategoryDetailQuery get _query {
-    final locked = widget.lockedPeriod;
-    if (locked != null) {
+    final period = _period;
+    if (period != null) {
       return CategoryDetailQuery(
-        start: locked.start,
-        end: locked.end,
+        start: period.start,
+        end: period.end,
         categoryId: widget.categoryId,
         includeChildren: widget.includeChildren,
       );
     }
     return CategoryDetailQuery.month(
-      month: _month,
+      month: _month!,
       categoryId: widget.categoryId,
       includeChildren: widget.includeChildren,
     );
@@ -74,7 +76,7 @@ class _CategoryDetailPageState extends ConsumerState<CategoryDetailPage> {
   Widget build(BuildContext context) {
     final query = _query;
     final async = ref.watch(categoryDetailTransactionsProvider(query));
-    final locked = widget.lockedPeriod;
+    final period = _period;
 
     return Scaffold(
       backgroundColor: PigTokens.scaffoldBackground,
@@ -99,16 +101,17 @@ class _CategoryDetailPageState extends ConsumerState<CategoryDetailPage> {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (locked != null)
-                DetailPeriodReadonlyBar(
-                  label: formatReportPeriodTitle(locked),
+              if (period != null)
+                DetailPeriodNavBar(
+                  period: period,
                   count: items.length,
                   expense: expense,
                   income: income,
+                  onPeriodChanged: (p) => setState(() => _period = p),
                 )
               else
                 DetailMonthNavBar(
-                  month: _month,
+                  month: _month!,
                   count: items.length,
                   expense: expense,
                   income: income,
@@ -118,7 +121,7 @@ class _CategoryDetailPageState extends ConsumerState<CategoryDetailPage> {
               Expanded(
                 child: items.isEmpty
                     ? EmptyState(
-                        message: locked != null ? '本期暂无账单' : '本月暂无账单',
+                        message: period != null ? '本期暂无账单' : '本月暂无账单',
                       )
                     : ListView.separated(
                         padding: const EdgeInsets.symmetric(
@@ -135,6 +138,7 @@ class _CategoryDetailPageState extends ConsumerState<CategoryDetailPage> {
                             child: TransactionRowTile(
                               item: items[i],
                               showMonthDay: true,
+                              enableLongPressDelete: true,
                             ),
                           );
                         },
@@ -236,43 +240,137 @@ class DetailMonthNavBar extends StatelessWidget {
   }
 }
 
-/// 报表下钻：只读周期文案 + 汇总（ADR-033）。
-class DetailPeriodReadonlyBar extends StatelessWidget {
-  const DetailPeriodReadonlyBar({
+/// 报表下钻：周期 ◀▶（与报表同语义，页内独立，不回写）。
+class DetailPeriodNavBar extends StatelessWidget {
+  const DetailPeriodNavBar({
     super.key,
-    required this.label,
+    required this.period,
     required this.count,
     required this.expense,
     required this.income,
+    required this.onPeriodChanged,
   });
 
-  final String label;
+  final ReportPeriod period;
   final int count;
   final double expense;
   final double income;
+  final ValueChanged<ReportPeriod> onPeriodChanged;
+
+  bool get _showArrows => period.scope != ReportScope.custom;
+
+  Future<void> _pick(BuildContext context) async {
+    switch (period.scope) {
+      case ReportScope.week:
+        final picked = await showReportWeekPicker(
+          context,
+          initialAnchor: period.anchor,
+        );
+        if (picked != null) {
+          onPeriodChanged(ReportPeriod.fromScope(ReportScope.week, picked));
+        }
+      case ReportScope.month:
+        final picked = await showReportMonthPicker(
+          context,
+          initialMonth: period.anchor,
+        );
+        if (picked != null) {
+          onPeriodChanged(ReportPeriod.fromScope(ReportScope.month, picked));
+        }
+      case ReportScope.year:
+        final picked = await showReportYearPicker(
+          context,
+          initialYear: period.anchor,
+        );
+        if (picked != null) {
+          onPeriodChanged(ReportPeriod.fromScope(ReportScope.year, picked));
+        }
+      case ReportScope.custom:
+        final endInclusive = period.end.subtract(const Duration(days: 1));
+        final range = await showDateRangePicker(
+          context: context,
+          firstDate: DateTime(2000),
+          lastDate: DateTime(2100),
+          initialDateRange: DateTimeRange(
+            start: period.start,
+            end: endInclusive,
+          ),
+          helpText: '选择自定义区间',
+        );
+        if (range != null) {
+          onPeriodChanged(
+            ReportPeriod.custom(
+              startInclusive: DateTime(
+                range.start.year,
+                range.start.month,
+                range.start.day,
+              ),
+              endExclusive: DateTime(
+                range.end.year,
+                range.end.month,
+                range.end.day,
+              ).add(const Duration(days: 1)),
+            ),
+          );
+        }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final label = formatReportPeriodTitle(period);
     return Material(
       color: PigTokens.surface,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(
-          PigTokens.spaceLg,
-          PigTokens.spaceMd,
+          PigTokens.spaceSm,
+          PigTokens.spaceSm,
           PigTokens.spaceLg,
           PigTokens.spaceMd,
         ),
         child: Column(
           children: [
-            Text(
-              label,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
-              ),
+            Row(
+              children: [
+                if (_showArrows)
+                  IconButton(
+                    tooltip: '上一周期',
+                    onPressed: () => onPeriodChanged(period.previous),
+                    icon: const Icon(Icons.chevron_left),
+                  )
+                else
+                  const SizedBox(width: 48),
+                Expanded(
+                  child: InkWell(
+                    onTap: () => _pick(context),
+                    borderRadius: BorderRadius.circular(8),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Text(
+                        label,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                if (_showArrows)
+                  IconButton(
+                    tooltip: '下一周期',
+                    onPressed: () => onPeriodChanged(period.next),
+                    icon: const Icon(Icons.chevron_right),
+                  )
+                else
+                  IconButton(
+                    tooltip: '选择区间',
+                    onPressed: () => _pick(context),
+                    icon: const Icon(Icons.date_range, size: 20),
+                  ),
+              ],
             ),
-            const SizedBox(height: PigTokens.spaceSm),
             _DetailSummaryRow(
               count: count,
               expense: expense,

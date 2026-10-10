@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
@@ -5,8 +7,11 @@ import 'package:intl/intl.dart';
 import '../../data/app_database.dart';
 import '../../data/repositories/transaction_repository.dart';
 import '../../providers/database_provider.dart';
+import '../../providers/search_history_providers.dart';
 import '../../providers/transaction_providers.dart';
+import '../../services/search/search_history_store.dart';
 import '../../styles/tokens.dart';
+import '../../utils/money_format.dart';
 import '../../widgets/category_icon_view.dart';
 import '../../widgets/empty_state.dart';
 import '../../widgets/page_status.dart';
@@ -23,6 +28,7 @@ class SearchPage extends ConsumerStatefulWidget {
 
 class _SearchPageState extends ConsumerState<SearchPage> {
   final _keywordController = TextEditingController();
+  late final SearchHistoryStore _historyStore;
   String _keyword = '';
   double? _minAmount;
   double? _maxAmount;
@@ -34,9 +40,59 @@ class _SearchPageState extends ConsumerState<SearchPage> {
   final Set<int> _selectedIds = {};
 
   @override
+  void initState() {
+    super.initState();
+    _historyStore = ref.read(searchHistoryStoreProvider);
+  }
+
+  @override
   void dispose() {
+    final kw = _keyword.trim();
+    if (kw.isNotEmpty) {
+      unawaited(_historyStore.add(kw));
+    }
     _keywordController.dispose();
     super.dispose();
+  }
+
+  void _rememberKeyword([String? raw]) {
+    final kw = (raw ?? _keyword).trim();
+    if (kw.isEmpty) return;
+    unawaited(ref.read(searchHistoryProvider.notifier).add(kw));
+  }
+
+  void _applyHistoryKeyword(String keyword) {
+    final kw = keyword.trim();
+    if (kw.isEmpty) return;
+    _keywordController.value = TextEditingValue(
+      text: kw,
+      selection: TextSelection.collapsed(offset: kw.length),
+    );
+    setState(() => _keyword = kw);
+    _rememberKeyword(kw);
+  }
+
+  Future<void> _clearHistory() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('清除搜索历史'),
+        content: const Text('确定清除全部搜索历史吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('清除'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && mounted) {
+      await ref.read(searchHistoryProvider.notifier).clear();
+    }
   }
 
   bool get _hasFilter =>
@@ -539,6 +595,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
   @override
   Widget build(BuildContext context) {
     final asyncAll = ref.watch(ledgerTransactionsProvider);
+    final history = ref.watch(searchHistoryProvider);
 
     return Scaffold(
       backgroundColor: PigTokens.scaffoldBackground,
@@ -589,6 +646,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                     Expanded(
                       child: TextField(
                         controller: _keywordController,
+                        textInputAction: TextInputAction.search,
                         decoration: InputDecoration(
                           hintText: '备注、分类、标签、金额',
                           prefixIcon: const Icon(Icons.search),
@@ -604,6 +662,10 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                           ),
                         ),
                         onChanged: (v) => setState(() => _keyword = v.trim()),
+                        onSubmitted: (v) {
+                          setState(() => _keyword = v.trim());
+                          _rememberKeyword(v);
+                        },
                       ),
                     ),
                     IconButton(
@@ -619,6 +681,64 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                             ? PigTokens.primary
                             : PigTokens.textSecondary,
                       ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          if (!_batchMode && !_hasFilter && history.isNotEmpty)
+            Material(
+              color: PigTokens.surface,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  PigTokens.spaceLg,
+                  0,
+                  PigTokens.spaceSm,
+                  PigTokens.spaceSm,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Text(
+                          '历史记录',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: PigTokens.textSecondary,
+                          ),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          tooltip: '清除',
+                          onPressed: _clearHistory,
+                          visualDensity: VisualDensity.compact,
+                          icon: const Icon(
+                            Icons.delete_outline,
+                            size: 20,
+                            color: PigTokens.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Wrap(
+                      spacing: PigTokens.spaceSm,
+                      runSpacing: PigTokens.spaceSm,
+                      children: [
+                        for (final e in history)
+                          ActionChip(
+                            label: Text(
+                              e.keyword,
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                            backgroundColor: PigTokens.surfaceInput,
+                            side: BorderSide.none,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                            visualDensity: VisualDensity.compact,
+                            onPressed: () => _applyHistoryKeyword(e.keyword),
+                          ),
+                      ],
                     ),
                   ],
                 ),
@@ -691,15 +811,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                   );
                 }
 
-                var expense = 0.0;
-                var income = 0.0;
-                for (final i in results) {
-                  if (i.tx.type == 'expense') {
-                    expense += i.tx.amount;
-                  } else {
-                    income += i.tx.amount;
-                  }
-                }
+                final ledger = MonthLedgerView.fromItems(results);
 
                 return Column(
                   children: [
@@ -719,7 +831,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                           ),
                           const Spacer(),
                           Text(
-                            '支 ¥${expense.toStringAsFixed(2)}  收 ¥${income.toStringAsFixed(2)}',
+                            '支 ¥${formatMoney(ledger.monthExpense)}  收 ¥${formatMoney(ledger.monthIncome)}',
                             style: const TextStyle(
                               fontSize: 12,
                               color: PigTokens.textTertiary,
@@ -768,29 +880,26 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                         ),
                       ),
                     Expanded(
-                      child: ListView.separated(
-                        padding: const EdgeInsets.only(bottom: PigTokens.spaceXl),
-                        itemCount: results.length,
-                        separatorBuilder: (_, _) =>
-                            const Divider(height: 1, indent: 72),
+                      child: ListView.builder(
+                        padding: const EdgeInsets.fromLTRB(
+                          PigTokens.spaceLg,
+                          PigTokens.spaceXs,
+                          PigTokens.spaceLg,
+                          PigTokens.spaceXl,
+                        ),
+                        itemCount: ledger.days.length,
                         itemBuilder: (context, index) {
-                          final item = results[index];
-                          final selected = _selectedIds.contains(item.tx.id);
-                          return Material(
-                            color: PigTokens.surface,
-                            child: TransactionRowTile(
-                              item: item,
-                              selected: selected,
-                              onToggleSelect: _batchMode
-                                  ? () => setState(() {
-                                        if (selected) {
-                                          _selectedIds.remove(item.tx.id);
-                                        } else {
-                                          _selectedIds.add(item.tx.id);
-                                        }
-                                      })
-                                  : null,
-                            ),
+                          return _SearchDaySection(
+                            group: ledger.days[index],
+                            batchMode: _batchMode,
+                            selectedIds: _selectedIds,
+                            onToggleSelect: (id) => setState(() {
+                              if (_selectedIds.contains(id)) {
+                                _selectedIds.remove(id);
+                              } else {
+                                _selectedIds.add(id);
+                              }
+                            }),
                           );
                         },
                       ),
@@ -821,6 +930,105 @@ class _FilterChip extends StatelessWidget {
         onDeleted: onClear,
         backgroundColor: PigTokens.primarySoft,
         side: BorderSide.none,
+      ),
+    );
+  }
+}
+
+String _searchDayTitle(DateTime day) {
+  final weekday = DateFormat('EEEE', 'zh_CN').format(day);
+  final today = DateTime.now();
+  final isToday = day.year == today.year &&
+      day.month == today.month &&
+      day.day == today.day;
+  if (isToday) {
+    return '${DateFormat('M月d日').format(day)} · 今天';
+  }
+  if (day.year == today.year) {
+    return '${DateFormat('M月d日').format(day)} · $weekday';
+  }
+  return '${DateFormat('yyyy年M月d日').format(day)} · $weekday';
+}
+
+class _SearchDaySection extends StatelessWidget {
+  const _SearchDaySection({
+    required this.group,
+    required this.batchMode,
+    required this.selectedIds,
+    required this.onToggleSelect,
+  });
+
+  final DayTransactionGroup group;
+  final bool batchMode;
+  final Set<int> selectedIds;
+  final ValueChanged<int> onToggleSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: PigTokens.spaceMd),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              PigTokens.spaceXs,
+              PigTokens.spaceSm,
+              PigTokens.spaceXs,
+              PigTokens.spaceSm,
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _searchDayTitle(group.day),
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: PigTokens.textSecondary,
+                    ),
+                  ),
+                ),
+                Text(
+                  '支 ¥${formatMoney(group.expense)}',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: PigTokens.textTertiary,
+                  ),
+                ),
+                const SizedBox(width: PigTokens.spaceSm),
+                Text(
+                  '收 ¥${formatMoney(group.income)}',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: PigTokens.textTertiary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Material(
+            color: PigTokens.surface,
+            borderRadius: BorderRadius.circular(PigTokens.radiusCard),
+            clipBehavior: Clip.antiAlias,
+            child: Column(
+              children: [
+                for (var i = 0; i < group.items.length; i++) ...[
+                  TransactionRowTile(
+                    item: group.items[i],
+                    selected: selectedIds.contains(group.items[i].tx.id),
+                    onToggleSelect: batchMode
+                        ? () => onToggleSelect(group.items[i].tx.id)
+                        : null,
+                  ),
+                  if (i != group.items.length - 1)
+                    const Divider(height: 1, indent: 72),
+                ],
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

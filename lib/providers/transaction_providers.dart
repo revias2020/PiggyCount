@@ -122,7 +122,7 @@ final calendarDailyTotalsProvider =
   });
 });
 
-/// 分类明细查询键（月度可换月，或报表只读区间；ADR-029/033）。
+/// 分类明细查询键（月度可换月，或报表周期区间；ADR-029/033）。
 @immutable
 class CategoryDetailQuery {
   const CategoryDetailQuery({

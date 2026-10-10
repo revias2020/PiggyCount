@@ -258,7 +258,7 @@ class _ReportBody extends StatelessWidget {
           builder: (_) => TagDetailPage(
             tagId: slice.id,
             tagName: slice.name,
-            lockedPeriod: period,
+            initialPeriod: period,
           ),
         ),
       );
@@ -269,7 +269,7 @@ class _ReportBody extends StatelessWidget {
         builder: (_) => CategoryDetailPage(
           categoryId: slice.id,
           categoryName: slice.name,
-          lockedPeriod: period,
+          initialPeriod: period,
           includeChildren: dim == CompositionDim.mainCategory && slice.id != null,
         ),
       ),
