@@ -523,9 +523,16 @@ class AutoBillingService {
       );
       _resumeQueue.addLast(job);
     }
+    // 先挂 batch 再放 assoc，避免打开 App 时「检测到截图」通知被掐断、识别空窗。
+    await ForegroundBillingBridge.acquire(
+      BillingFgsOwner.batch,
+      title: '正在识别',
+      body: 'AI 分析账单中…',
+    );
     if (_assocPaths.isEmpty) {
-      unawaited(ForegroundBillingBridge.release(BillingFgsOwner.assoc));
+      await ForegroundBillingBridge.release(BillingFgsOwner.assoc);
     }
+    _refreshRetainOnBackForAssoc();
     unawaited(_ensurePump());
   }
 
@@ -539,11 +546,28 @@ class AutoBillingService {
     if (_superseded.contains(imagePath)) return;
     if (resume) return;
     _assocPaths.add(imagePath);
+    // 关联窗期间也保活 Activity，避免打开 App 再返回时 finish 拆掉门闩。
+    unawaited(AndroidActivityBridge.setRetainOnBack(true));
     await ForegroundBillingBridge.acquire(
       BillingFgsOwner.assoc,
       title: '检测到截图',
       body: '等待确认后识别…',
     );
+  }
+
+  /// 关联窗路径集变化后同步返回键保活（泵/分享仍在则不关）。
+  void _refreshRetainOnBackForAssoc() {
+    if (_assocPaths.isNotEmpty) {
+      unawaited(AndroidActivityBridge.setRetainOnBack(true));
+      return;
+    }
+    if (_pumpRunning ||
+        ForegroundBillingBridge.hasOwner(BillingFgsOwner.share) ||
+        ForegroundBillingBridge.hasOwner(BillingFgsOwner.batch) ||
+        ForegroundBillingBridge.hasOwner(BillingFgsOwner.retry)) {
+      return;
+    }
+    unawaited(AndroidActivityBridge.setRetainOnBack(false));
   }
 
   /// 原生判定截图被编辑另存替换：取消旧路径入账意图。
@@ -564,6 +588,7 @@ class AutoBillingService {
     if (_assocPaths.isEmpty) {
       await ForegroundBillingBridge.release(BillingFgsOwner.assoc);
     }
+    _refreshRetainOnBackForAssoc();
     await _showProgress(
       title: '截图已更新',
       body: '改用编辑后的图片识别…',
@@ -596,6 +621,7 @@ class AutoBillingService {
     if (_assocPaths.isEmpty) {
       await ForegroundBillingBridge.release(BillingFgsOwner.assoc);
     }
+    _refreshRetainOnBackForAssoc();
 
     // 早期 acquire(batch) 但未入队时，取消需放掉 batch，避免 FGS 残留。
     if (!keptAlive &&
@@ -645,6 +671,7 @@ class AutoBillingService {
       if (_assocPaths.isEmpty) {
         unawaited(ForegroundBillingBridge.release(BillingFgsOwner.assoc));
       }
+      _refreshRetainOnBackForAssoc();
     }
     final job = _BillingJob(
       imagePath: imagePath,

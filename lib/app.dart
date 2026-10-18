@@ -48,6 +48,8 @@ class _PiggyAppState extends ConsumerState<PiggyApp>
     notifications.onAction = _onBillingNotificationAction;
     _shareHandler = ImageShareHandler(
       autoBilling: ref.read(autoBillingServiceProvider),
+      settings: ref.read(settingsRepositoryProvider),
+      navigatorKey: rootNavigatorKey,
     );
     WidgetsBinding.instance.addPostFrameCallback((_) => _bootstrap());
   }

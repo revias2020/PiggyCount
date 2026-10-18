@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../app_database.dart';
+import '../../services/automation/share_after_action.dart';
 import '../../utils/screenshot_watch_path.dart';
 
 /// 应用设置（智能记账开关等）读写。
@@ -10,6 +11,36 @@ class SettingsRepository {
   final AppDatabase _db;
 
   static const autoGenerateTagsKey = 'auto_generate_tags';
+
+  static const shareAfterActionKey = 'share_after_action';
+
+  /// 分享入账后的去向（默认每次询问）。
+  Future<ShareAfterAction> shareAfterAction() async {
+    final row = await (_db.select(_db.appSettings)
+          ..where((t) => t.key.equals(shareAfterActionKey)))
+        .getSingleOrNull();
+    return ShareAfterActionX.tryParse(row?.value) ?? ShareAfterAction.ask;
+  }
+
+  Stream<ShareAfterAction> watchShareAfterAction() {
+    return (_db.select(_db.appSettings)
+          ..where((t) => t.key.equals(shareAfterActionKey)))
+        .watch()
+        .map((rows) {
+      if (rows.isEmpty) return ShareAfterAction.ask;
+      return ShareAfterActionX.tryParse(rows.first.value) ??
+          ShareAfterAction.ask;
+    });
+  }
+
+  Future<void> setShareAfterAction(ShareAfterAction action) async {
+    await _db.into(_db.appSettings).insertOnConflictUpdate(
+          AppSettingsCompanion.insert(
+            key: shareAfterActionKey,
+            value: action.storageValue,
+          ),
+        );
+  }
 
   /// 智能记账是否允许创建新标签（默认 true）。
   Future<bool> autoGenerateTags() async {

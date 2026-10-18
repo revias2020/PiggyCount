@@ -24,16 +24,31 @@ import java.io.File
  * - 监听目录 ∩ 关键词（ADR-070）：空目录时不应注册本 Observer。
  * - 近期原名 FIFO（ADR-077）：分享入账记下 DISPLAY_NAME，补扫/门闩命中则跳过。
  * - 回前台补扫（ADR-080）：目录收窄 SQL + 收集后一次回调 Dart；不逐张立刻门闩。
+ * - Activity 可 detach/attach Dart 桥：进程级保留候选，避免打开 App 拆掉关联窗。
  */
 class ScreenshotObserver(
-    private val context: Context,
-    private val onScreenshotDetected: (String) -> Unit,
-    private val onScreenshotProgress: (path: String, resume: Boolean) -> Unit = { _, _ -> },
-    private val onScreenshotSuperseded: (oldPath: String, newPath: String) -> Unit = { _, _ -> },
-    private val onScreenshotCancelled: (String) -> Unit = {},
-    private val onSettleLog: (String) -> Unit = {},
+    context: Context,
+    onScreenshotDetected: (String) -> Unit,
+    onScreenshotProgress: (path: String, resume: Boolean) -> Unit = { _, _ -> },
+    onScreenshotSuperseded: (oldPath: String, newPath: String) -> Unit = { _, _ -> },
+    onScreenshotCancelled: (String) -> Unit = {},
+    onSettleLog: (String) -> Unit = {},
     initialWatchDirectories: Collection<String> = emptyList(),
 ) : ContentObserver(Handler(Looper.getMainLooper())) {
+
+    /** 使用 Application Context，避免 Activity 回收后 Observer 仍持有 Activity。 */
+    private val context: Context = context.applicationContext
+
+    private var onScreenshotDetected: (String) -> Unit = onScreenshotDetected
+    private var onScreenshotProgress: (path: String, resume: Boolean) -> Unit =
+        onScreenshotProgress
+    private var onScreenshotSuperseded: (oldPath: String, newPath: String) -> Unit =
+        onScreenshotSuperseded
+    private var onScreenshotCancelled: (String) -> Unit = onScreenshotCancelled
+    private var onSettleLog: (String) -> Unit = onSettleLog
+
+    /** Dart MethodChannel 是否已挂上；Activity 销毁后为 false，门闩推迟到重绑。 */
+    private var dartBridgeAttached: Boolean = true
 
     companion object {
         private const val TAG = "PiggyScreenshot"
@@ -101,7 +116,48 @@ class ScreenshotObserver(
         return want.isNotEmpty() && want == watchDirectories
     }
 
+    /** 关联窗 / 短观察 / 删原短等进行中。 */
+    fun hasActiveCandidates(): Boolean = candidates.isNotEmpty()
+
+    /**
+     * Activity / FlutterEngine 重建后重绑 Dart 回调，不拆候选与计时器。
+     */
+    fun attachDartBridge(
+        onScreenshotDetected: (String) -> Unit,
+        onScreenshotProgress: (path: String, resume: Boolean) -> Unit,
+        onScreenshotSuperseded: (oldPath: String, newPath: String) -> Unit,
+        onScreenshotCancelled: (String) -> Unit,
+        onSettleLog: (String) -> Unit,
+    ) {
+        this.onScreenshotDetected = onScreenshotDetected
+        this.onScreenshotProgress = onScreenshotProgress
+        this.onScreenshotSuperseded = onScreenshotSuperseded
+        this.onScreenshotCancelled = onScreenshotCancelled
+        this.onSettleLog = onSettleLog
+        dartBridgeAttached = true
+        // 桥接恢复后立刻补跑已到期门闩，避免只靠 resume 补扫。
+        for (c in candidates.values.toList()) {
+            if (c.awaitingSuccessor) continue
+            if (c.observingPeer != null) continue
+            val remaining = (c.firstSeenAt + ASSOC_MS) - System.currentTimeMillis()
+            if (remaining <= 0L) {
+                onGateDue(c.path)
+            }
+        }
+    }
+
+    /** Activity onDestroy：松绑回调，保留候选与 ContentObserver。 */
+    fun detachDartBridge() {
+        dartBridgeAttached = false
+        onScreenshotDetected = {}
+        onScreenshotProgress = { _, _ -> }
+        onScreenshotSuperseded = { _, _ -> }
+        onScreenshotCancelled = {}
+        onSettleLog = {}
+    }
+
     fun dispose() {
+        dartBridgeAttached = false
         for (c in candidates.values) {
             clearTimers(c)
         }
@@ -329,6 +385,9 @@ class ScreenshotObserver(
 
     /**
      * 回前台补扫专用：目录∩关键词∩未处理且文件仍在 → 占坑并返回 path（不入账回调）。
+     *
+     * 删原短等 / 连拍观察中的候选不拆：交给实时 Observer。
+     * 关联窗内且文件仍在：提前入队（不再等满 15s）；文件已不在则保留候选。
      */
     private fun collectResumeCandidate(
         path: String,
@@ -343,11 +402,18 @@ class ScreenshotObserver(
         if (!ScreenshotWatchPaths.matches(path, watchDirectories)) return null
         if (processed.contains(path)) return null
         if (ScreenshotNameFifo.contains(context, name)) return null
-        if (candidates.containsKey(path)) {
+
+        val existing = candidates[path]
+        if (existing != null) {
+            if (existing.awaitingSuccessor || existing.observingPeer != null) {
+                return null
+            }
+            if (!fileAlive(path)) return null
             // 回前台由补扫立刻入队，不把剩余关联窗再等满。
             dropCandidate(path)
+        } else if (!fileAlive(path)) {
+            return null
         }
-        if (!fileAlive(path)) return null
 
         processed.add(path)
         ScreenshotNameFifo.remember(context, name)
@@ -583,6 +649,16 @@ class ScreenshotObserver(
         }
         if (c.observingPeer != null) return
 
+        // Activity 已销毁、Dart 桥未挂上：推迟门闩，避免占坑后回调丢失。
+        if (!dartBridgeAttached) {
+            settleLog("确认入队推迟：等待 App 前台桥接 file=${c.name}")
+            c.gateRunnable?.let { handler.removeCallbacks(it) }
+            val r = Runnable { onGateDue(c.path) }
+            c.gateRunnable = r
+            handler.postDelayed(r, 1000L)
+            return
+        }
+
         val now = System.currentTimeMillis()
         if (now - lastAcceptedAt < 500) {
             handler.postDelayed({
@@ -592,22 +668,30 @@ class ScreenshotObserver(
             return
         }
 
-        processed.add(c.path)
-        ScreenshotNameFifo.remember(context, c.name)
         lastAcceptedAt = now
-        persist()
         clearTimers(c)
         candidates.remove(c.path)
         settleLog("确认入队：开始识别 file=${c.name}")
         try {
             onScreenshotDetected(c.path)
+            processed.add(c.path)
+            ScreenshotNameFifo.remember(context, c.name)
+            persist()
+            if (processed.size > MAX_PATHS) {
+                val drop = processed.take(50).toSet()
+                processed.removeAll(drop)
+                persist()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "onScreenshotDetected failed", e)
-        }
-        if (processed.size > MAX_PATHS) {
-            val drop = processed.take(50).toSet()
-            processed.removeAll(drop)
-            persist()
+            // 回调失败：不占坑，短延迟重入候选，便于打开 App 后重试。
+            if (!candidates.containsKey(c.path) && !processed.contains(c.path)) {
+                candidates[c.path] = c
+                c.progressSent = true
+                val r = Runnable { onGateDue(c.path) }
+                c.gateRunnable = r
+                handler.postDelayed(r, 1000L)
+            }
         }
     }
 

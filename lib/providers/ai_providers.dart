@@ -8,6 +8,7 @@ import '../services/ai/bill_creation_service.dart';
 import '../services/ai/offline_asr_model_store.dart';
 import '../services/ai/speech_engine_preference.dart';
 import '../services/ai/voice_recognition_session.dart';
+import '../services/automation/share_after_action.dart';
 import 'database_provider.dart';
 
 final aiProviderStoreProvider = Provider((ref) => AiProviderStore());
@@ -82,4 +83,8 @@ final screenshotAutoBillingProvider = StreamProvider<bool>((ref) {
 
 final screenshotWatchDirectoriesProvider = StreamProvider<List<String>>((ref) {
   return ref.watch(settingsRepositoryProvider).watchScreenshotWatchDirectories();
+});
+
+final shareAfterActionProvider = StreamProvider<ShareAfterAction>((ref) {
+  return ref.watch(settingsRepositoryProvider).watchShareAfterAction();
 });

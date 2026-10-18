@@ -7,9 +7,11 @@ import 'package:permission_handler/permission_handler.dart';
 import '../../providers/ai_providers.dart';
 import '../../providers/automation_providers.dart';
 import '../../providers/database_provider.dart';
+import '../../services/automation/share_after_action.dart';
 import '../../services/sync/cloud_sync_providers.dart';
 import '../../styles/tokens.dart';
 import '../../widgets/pig_toast.dart';
+import '../../widgets/share_after_action_dialog.dart';
 import '../ai/ai_settings_page.dart';
 import '../category/category_manage_page.dart';
 import '../settings/about_page.dart';
@@ -35,6 +37,8 @@ class MinePage extends ConsumerWidget {
     final watchDirs =
         ref.watch(screenshotWatchDirectoriesProvider).valueOrNull ??
             const <String>[];
+    final shareAfter = ref.watch(shareAfterActionProvider).valueOrNull ??
+        ShareAfterAction.ask;
     final aiSubtitle =
         ref.watch(aiMineSubtitleProvider).valueOrNull ?? '服务商与能力绑定';
     final cloudCfg = ref.watch(cloudSyncConfigProvider).valueOrNull;
@@ -240,6 +244,24 @@ class MinePage extends ConsumerWidget {
                       builder: (_) => const IosScreenshotGuidePage(),
                     ),
                   );
+                },
+              ),
+            ],
+            if (Platform.isAndroid) ...[
+              const _SectionDivider(),
+              _MineTile(
+                icon: Icons.reply_outlined,
+                title: '分享入账后',
+                subtitle: shareAfter.label,
+                onTap: () async {
+                  final picked = await showShareAfterActionSettingsDialog(
+                    context,
+                    current: shareAfter,
+                  );
+                  if (picked == null) return;
+                  await ref
+                      .read(settingsRepositoryProvider)
+                      .setShareAfterAction(picked);
                 },
               ),
             ],

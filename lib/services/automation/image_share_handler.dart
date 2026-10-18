@@ -1,11 +1,15 @@
 import 'dart:async';
 
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../data/repositories/settings_repository.dart';
+import '../../widgets/share_after_action_dialog.dart';
 import '../platform/android_activity_bridge.dart';
 import '../platform/foreground_billing_bridge.dart';
 import 'auto_billing_service.dart';
 import 'billing_image_limits.dart';
+import 'share_after_action.dart';
 import 'share_early_progress_gate.dart';
 
 /// 系统分享图片入账：冷/热启动均由原生写入临时文件后经 MethodChannel 通知。
@@ -17,18 +21,24 @@ import 'share_early_progress_gate.dart';
 /// ShareRelay 拷图成功即贴同 id 进度并起 FGS（ADR-063 / 069；冷启先直发通知，
 /// 且等 startForeground 或短超时后再进 MainActivity）；Dart 接手时
 /// [ForegroundBillingBridge.acquire] `share`，**先**入队 Vision（前台建连），
-/// 短预热后再 [AndroidActivityBridge.moveTaskToBack] 回源；结束 [release] `share`
-/// （ADR-076）。直存期间返回键由 [AutoBillingService] 保活，不 finish。
+/// 再按「分享入账后」策略决定是否 [AndroidActivityBridge.moveTaskToBack] 回源；
+/// 结束 [release] `share`（ADR-076）。直存期间返回键由 [AutoBillingService] 保活，
+/// 不 finish。
 class ImageShareHandler {
   ImageShareHandler({
     required this.autoBilling,
+    required this.settings,
+    required this.navigatorKey,
   });
 
   static const _channel = MethodChannel('com.xiaozhu.piggy_count/share');
 
   final AutoBillingService autoBilling;
+  final SettingsRepository settings;
+  final GlobalKey<NavigatorState> navigatorKey;
 
   bool _bound = false;
+  Completer<ShareAfterPromptResult?>? _askInflight;
 
   Future<void> bind() async {
     if (_bound) return;
@@ -99,7 +109,7 @@ class ImageShareHandler {
       ];
 
       // 回源不阻塞识别；短预热让泵有机会在 resumed 下开始 POST。
-      unawaited(_retreatAfterForegroundWarmup());
+      unawaited(_resolveAfterShareIngress());
 
       await Future.wait(jobs);
     } finally {
@@ -107,11 +117,63 @@ class ImageShareHandler {
     }
   }
 
-  /// 前台预热后再回源，栏里仍可看到 FGS 进度（Relay 已贴过「已收到」）。
-  Future<void> _retreatAfterForegroundWarmup() async {
-    await Future<void>.delayed(ShareEarlyProgressGate.foregroundNetworkWarmup);
+  /// 按设置 / 弹窗决定是否回源；选返回时仍保证前台预热窗口。
+  Future<void> _resolveAfterShareIngress() async {
+    final started = DateTime.now();
+    final preference = await settings.shareAfterAction();
+    var decision = preference;
+
+    if (preference == ShareAfterAction.ask) {
+      final prompted = await _promptShareAfterAction();
+      if (prompted == null) {
+        decision = ShareAfterAction.retreat;
+      } else {
+        decision = prompted.action;
+        if (prompted.setAsDefault &&
+            (decision == ShareAfterAction.stay ||
+                decision == ShareAfterAction.retreat)) {
+          await settings.setShareAfterAction(decision);
+        }
+      }
+    }
+
+    if (decision == ShareAfterAction.stay) return;
+
+    final elapsed = DateTime.now().difference(started);
+    final remaining =
+        ShareEarlyProgressGate.foregroundNetworkWarmup - elapsed;
+    if (remaining > Duration.zero) {
+      await Future<void>.delayed(remaining);
+    }
     await AndroidActivityBridge.moveTaskToBack();
     // moveTaskToBack 返回早于 visibility=false（热启实测约 300ms）
     await Future<void>.delayed(ShareEarlyProgressGate.backgroundSettle);
+  }
+
+  Future<ShareAfterPromptResult?> _promptShareAfterAction() async {
+    if (_askInflight != null) return _askInflight!.future;
+    final gate = Completer<ShareAfterPromptResult?>();
+    _askInflight = gate;
+    try {
+      final result = await _showAskDialogWhenReady();
+      gate.complete(result);
+      return result;
+    } catch (_) {
+      gate.complete(null);
+      return null;
+    } finally {
+      _askInflight = null;
+    }
+  }
+
+  Future<ShareAfterPromptResult?> _showAskDialogWhenReady() async {
+    for (var i = 0; i < 40; i++) {
+      final ctx = navigatorKey.currentContext;
+      if (ctx != null && ctx.mounted) {
+        return showShareAfterActionAskDialog(ctx);
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    return null;
   }
 }

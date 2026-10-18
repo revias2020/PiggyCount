@@ -23,6 +23,9 @@ import io.flutter.plugin.common.MethodChannel
  *
  * 后台直存进行中：[setRetainOnBack] 使返回键 [moveTaskToBack] 而非 finish，
  * 避免分享后回到截图编辑时拆掉 Flutter 引擎导致识别静默中断。
+ *
+ * [ScreenshotObserver] 挂在 companion（进程级）：Activity 被系统回收或用户在
+ * 「检测到截图」关联窗期间打开再划掉时，勿 dispose 门闩/候选。
  */
 class MainActivity : FlutterFragmentActivity() {
     companion object {
@@ -30,9 +33,12 @@ class MainActivity : FlutterFragmentActivity() {
         const val SCREENSHOT_CHANNEL = "com.xiaozhu.piggy_count/screenshot"
         const val SHARE_CHANNEL = "com.xiaozhu.piggy_count/share"
         const val ACTIVITY_CHANNEL = "com.xiaozhu.piggy_count/activity"
+
+        /** 进程级截图监听；与 Activity 生命周期解耦。 */
+        @Volatile
+        private var retainedScreenshotObserver: ScreenshotObserver? = null
     }
 
-    private var screenshotObserver: ScreenshotObserver? = null
     private var pendingSharedPaths: ArrayList<String>? = null
     private var pendingSharedTruncated: Boolean = false
     private var flutterEngineRef: FlutterEngine? = null
@@ -87,7 +93,7 @@ class MainActivity : FlutterFragmentActivity() {
                         result.success(true)
                     }
                     "resumeScreenshotScan" -> {
-                        val obs = screenshotObserver
+                        val obs = retainedScreenshotObserver
                         if (obs == null) {
                             result.success(emptyList<String>())
                         } else {
@@ -110,7 +116,7 @@ class MainActivity : FlutterFragmentActivity() {
                             stopScreenshotObserver()
                             result.success(false)
                         } else {
-                            val obs = screenshotObserver
+                            val obs = retainedScreenshotObserver
                             if (obs != null) {
                                 obs.setWatchDirectories(normalized)
                                 result.success(true)
@@ -313,23 +319,56 @@ class MainActivity : FlutterFragmentActivity() {
             stopScreenshotObserver()
             return
         }
-        val existing = screenshotObserver
+        val channel = MethodChannel(engine.dartExecutor.binaryMessenger, SCREENSHOT_CHANNEL)
+        val binders = screenshotDartBinders(channel)
+        val existing = retainedScreenshotObserver
         if (existing != null && existing.watches(watchDirectories)) {
+            // 同目录：只重绑 Dart 桥，保留关联窗候选与计时器。
+            existing.attachDartBridge(
+                onScreenshotDetected = binders.detected,
+                onScreenshotProgress = binders.progress,
+                onScreenshotSuperseded = binders.superseded,
+                onScreenshotCancelled = binders.cancelled,
+                onSettleLog = binders.settleLog,
+            )
             return
         }
         stopScreenshotObserver()
-        val channel = MethodChannel(engine.dartExecutor.binaryMessenger, SCREENSHOT_CHANNEL)
-        screenshotObserver = ScreenshotObserver(
+        val observer = ScreenshotObserver(
             this,
-            onScreenshotDetected = { path ->
+            onScreenshotDetected = binders.detected,
+            onScreenshotProgress = binders.progress,
+            onScreenshotSuperseded = binders.superseded,
+            onScreenshotCancelled = binders.cancelled,
+            onSettleLog = binders.settleLog,
+            initialWatchDirectories = watchDirectories,
+        )
+        retainedScreenshotObserver = observer
+        for (uri in screenshotObserverUris()) {
+            contentResolver.registerContentObserver(uri, true, observer)
+        }
+    }
+
+    private data class ScreenshotDartBinders(
+        val detected: (String) -> Unit,
+        val progress: (String, Boolean) -> Unit,
+        val superseded: (String, String) -> Unit,
+        val cancelled: (String) -> Unit,
+        val settleLog: (String) -> Unit,
+    )
+
+    private fun screenshotDartBinders(channel: MethodChannel): ScreenshotDartBinders {
+        val appCtx = applicationContext
+        return ScreenshotDartBinders(
+            detected = { path ->
                 channel.invokeMethod("onScreenshotDetected", path)
             },
-            onScreenshotProgress = { path, resume ->
+            progress = { path, resume ->
                 // 与关联窗检出日志同拍：原生先贴 FGS，避免仅靠 Dart 通知在后台迟到。
                 // ADR-080：补扫不再走 resume 早期进度（改 Dart 1002）。
                 if (!resume) {
                     AutoBillingForegroundService.start(
-                        this,
+                        appCtx,
                         "检测到截图",
                         "等待确认后识别…",
                     )
@@ -339,24 +378,19 @@ class MainActivity : FlutterFragmentActivity() {
                     )
                 }
             },
-            onScreenshotSuperseded = { oldPath, newPath ->
+            superseded = { oldPath, newPath ->
                 channel.invokeMethod(
                     "onScreenshotSuperseded",
                     mapOf("oldPath" to oldPath, "newPath" to newPath),
                 )
             },
-            onScreenshotCancelled = { path ->
+            cancelled = { path ->
                 channel.invokeMethod("onScreenshotCancelled", path)
             },
-            onSettleLog = { message ->
+            settleLog = { message ->
                 channel.invokeMethod("onScreenshotSettleLog", message)
             },
-            initialWatchDirectories = watchDirectories,
         )
-        val observer = screenshotObserver!!
-        for (uri in screenshotObserverUris()) {
-            contentResolver.registerContentObserver(uri, true, observer)
-        }
     }
 
     /**
@@ -374,19 +408,21 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     private fun stopScreenshotObserver() {
-        screenshotObserver?.let {
+        retainedScreenshotObserver?.let {
             try {
-                contentResolver.unregisterContentObserver(it)
+                applicationContext.contentResolver.unregisterContentObserver(it)
             } catch (_: Exception) {
             }
             it.dispose()
-            screenshotObserver = null
+            retainedScreenshotObserver = null
         }
     }
 
     override fun onDestroy() {
         unregisterWidgetRefreshReceiver()
-        stopScreenshotObserver()
+        // 勿 dispose 进程级 Observer：关联窗期间 Activity 回收会拆掉门闩，
+        // 表现为「检测到截图」后打开 App 流程中断。仅松绑 Dart 桥。
+        retainedScreenshotObserver?.detachDartBridge()
         flutterEngineRef = null
         super.onDestroy()
     }
